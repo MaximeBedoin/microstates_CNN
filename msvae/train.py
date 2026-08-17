@@ -137,10 +137,21 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
 
 
 def architecture_search(grid: list[VAEConfig], x_train, x_val, mask=None,
-                        tcfg: TrainConfig | None = None):
+                        tcfg: TrainConfig | None = None, score_fn=None):
     """Recherche d'architecture sur le split train/val (par sujet).
 
-    Retourne la liste des resultats tries par loss de validation.
+    Le classement N'UTILISE PAS la loss de validation : celle-ci vaut
+    recon + beta * KL, donc deux configurations de beta differents optimisent
+    des objectifs differents et leurs losses ne sont pas comparables (comparer
+    ces valeurs revient a choisir systematiquement le plus petit beta).
+
+    Critere retenu, par ordre de preference :
+      * `score_fn(model, cfg) -> float` (plus petit = meilleur) si fournie :
+        le pipeline y passe un critere AVAL — la GEV obtenue apres clustering
+        latent, decodage et back-fitting sur les sujets de validation, ce qui
+        est la grandeur qui nous interesse reellement ;
+      * a defaut, l'erreur de reconstruction de validation, identique pour
+        toutes les configurations.
     """
     out = []
     for i, cfg in enumerate(grid):
@@ -148,9 +159,11 @@ def architecture_search(grid: list[VAEConfig], x_train, x_val, mask=None,
         print(f"  [{i + 1}/{len(grid)}] {cfg.kind} latent={cfg.latent_dim} "
               f"beta={cfg.beta} width={width}", flush=True)
         res = train_vae(cfg, x_train, x_val, mask, tcfg)
-        print(f"      val_loss={res.best_val:.4f} ({res.seconds:.0f}s)", flush=True)
-        out.append({"cfg": cfg, "val_loss": res.best_val,
-                    "val_recon": res.history[res.best_epoch].get("val_recon", np.nan)
-                    if res.best_epoch >= 0 else np.nan,
-                    "result": res})
-    return sorted(out, key=lambda r: r["val_loss"])
+        val_recon = (res.history[res.best_epoch].get("val_recon", np.nan)
+                     if res.best_epoch >= 0 else np.nan)
+        score = float(score_fn(res.model, cfg)) if score_fn is not None else val_recon
+        print(f"      val_recon={val_recon:.4f} score={score:.4f} "
+              f"({res.seconds:.0f}s)", flush=True)
+        out.append({"cfg": cfg, "val_loss": res.best_val, "val_recon": val_recon,
+                    "score": score, "result": res})
+    return sorted(out, key=lambda r: r["score"])

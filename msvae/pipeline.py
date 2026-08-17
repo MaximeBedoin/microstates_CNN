@@ -129,8 +129,30 @@ def default_grid(cfg: ExperimentConfig, n_ch: int) -> list[VAEConfig]:
     return grid
 
 
+def make_downstream_score(val_bank: PeakBank, val_records: list, k: int,
+                          min_segment_ms: float, seed: int = 0):
+    """Critere de selection d'architecture : -GEV sur les sujets de validation.
+
+    Pour chaque modele candidat : clustering latent (deux temps) -> decodage
+    des centroides -> back-fitting sur les enregistrements de validation ->
+    GEV moyenne. C'est la grandeur qui nous interesse, et elle est comparable
+    entre configurations (K est fixe), contrairement a la loss du VAE.
+    """
+    def score(model, mcfg) -> float:
+        maps = cluster.decoded_maps_from_bank(model, val_bank, k, mode="two_stage",
+                                              seed=seed, kind=mcfg.kind,
+                                              n_init=10)[0]
+        gevs = []
+        for rec in val_records:
+            seg = microstates.backfit(rec.data.astype(np.float64), maps, rec.sfreq,
+                                      min_segment_ms=min_segment_ms)
+            gevs.append(microstates.global_explained_variance(seg)[0])
+        return -float(np.mean(gevs))
+    return score
+
+
 def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
-               tcfg: TrainConfig | None = None):
+               tcfg: TrainConfig | None = None, records: list | None = None):
     """Recherche d'archi (split par sujet) puis entrainement final sur tous
     les sujets, pour le VAE conv et le VAE dense apparie en parametres."""
     n_ch = bank.topo.shape[1]
@@ -154,11 +176,18 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
             sel = rng.choice(sel, cfg.search_max_peaks, replace=False)
         stcfg = TrainConfig(**{**tcfg.__dict__, "epochs": cfg.search_epochs,
                                "verbose": False})
+        score_fn = None
+        if records is not None:
+            val_subs = set(val_bank.subjects)
+            val_records = [r for r in records if r.subject in val_subs]
+            score_fn = make_downstream_score(val_bal, val_records, cfg.k,
+                                             cfg.min_segment_ms, cfg.seed)
         search = architecture_search(grid, train_bal.images[sel], val_bal.images,
-                                     mask, stcfg)
+                                     mask, stcfg, score_fn=score_fn)
         best_cfg = search[0]["cfg"]
         print(f"  meilleure archi : latent={best_cfg.latent_dim} beta={best_cfg.beta} "
-              f"width={best_cfg.base_width} (val_loss={search[0]['val_loss']:.4f})")
+              f"width={best_cfg.base_width} (score={search[0]['score']:.4f}, "
+              f"critere = {'-GEV validation' if score_fn else 'recon validation'})")
     else:
         best_cfg = VAEConfig(kind="conv", latent_dim=cfg.latent_dim,
                              image_size=cfg.image_size, beta=1e-3,
@@ -263,7 +292,7 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
     print(f"  fidelite topo->image->topo : r = {np.mean(r):.4f}")
 
     print("[3/7] entrainement des VAE")
-    fit = fit_models(cfg, bank, out, tcfg)
+    fit = fit_models(cfg, bank, out, tcfg, records=records)
     state.models = fit
     results["models"] = dict(
         conv=dict(cfg=fit["conv_cfg"].to_dict(),
@@ -277,7 +306,8 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
     if fit["search"] is not None:
         results["arch_search"] = [
             dict(cfg=s["cfg"].to_dict(), val_loss=s["val_loss"],
-                 val_recon=s["val_recon"]) for s in fit["search"]]
+                 val_recon=s["val_recon"], score=s["score"])
+            for s in fit["search"]]
 
     print("[4/7] clustering latent + decodage")
     maps_by_method = {}
@@ -294,12 +324,23 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
                          "espace latent (VAE conv), clusters k-means")
 
     if cfg.run_pycrostates:
-        print("[5/7] baseline Pycrostates")
+        print("[5/7] baselines : Pycrostates et PCA + modified k-means")
         try:
             maps_by_method["pycrostates"] = baseline.modkmeans_group(
                 bank, info, cfg.k, seed=cfg.seed, two_stage=True)
         except Exception as exc:
             print(f"  echec Pycrostates : {exc}")
+        try:
+            # bras lineaire : meme dimension de goulot, meme clustering
+            m, meta = baseline.pca_modkmeans_group(
+                bank, info, cfg.k, n_components=fit["conv_cfg"].latent_dim,
+                seed=cfg.seed, two_stage=True)
+            maps_by_method[f"pca{fit['conv_cfg'].latent_dim}_modkmeans"] = m
+            results["pca_explained_variance"] = meta["explained_variance_ratio"]
+            print(f"  PCA rang {fit['conv_cfg'].latent_dim} : "
+                  f"{100 * meta['explained_variance_ratio']:.1f}% de variance")
+        except Exception as exc:
+            print(f"  echec PCA+modkmeans : {exc}")
     if gt_maps is not None:
         maps_by_method["ground_truth"] = gt_maps
     state.maps = maps_by_method
@@ -410,11 +451,19 @@ def run_stability(cfg: ExperimentConfig, bank, info, fit, tcfg=None) -> dict:
             sub_bank = bank.subset(np.isin(bank.subject, subs))
             return baseline.modkmeans_group(sub_bank, info, cfg.k, seed=cfg.seed,
                                             two_stage=True, n_init=50)
-        try:
-            out["pycrostates"] = _jsonable(evaluate.split_half_stability(
-                pyc_fn, bank.subject, n_repeats=max(3, n_rep // 3), seed=cfg.seed))
-        except Exception as exc:
-            out["pycrostates"] = str(exc)
+
+        def pca_fn(subs):
+            sub_bank = bank.subset(np.isin(bank.subject, subs))
+            return baseline.pca_modkmeans_group(
+                sub_bank, info, cfg.k, n_components=fit["conv_cfg"].latent_dim,
+                seed=cfg.seed, two_stage=True, n_init=50)[0]
+
+        for name, fn in (("pycrostates", pyc_fn), ("pca_modkmeans", pca_fn)):
+            try:
+                out[name] = _jsonable(evaluate.split_half_stability(
+                    fn, bank.subject, n_repeats=max(3, n_rep // 3), seed=cfg.seed))
+            except Exception as exc:
+                out[name] = str(exc)
 
     for k, v in out.items():
         if isinstance(v, dict):

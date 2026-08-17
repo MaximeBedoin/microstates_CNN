@@ -30,6 +30,38 @@ def modkmeans_maps(topo: np.ndarray, info, k: int, seed: int = 0,
     return maps / np.maximum(np.linalg.norm(maps, axis=1, keepdims=True), 1e-12)
 
 
+def pca_compress(topo: np.ndarray, n_components: int) -> tuple[np.ndarray, object]:
+    """Compression LINEAIRE de rang `n_components` des topographies.
+
+    Bras de reference de l'ablation : meme dimension de goulot que le VAE,
+    mais obtenue par une projection lineaire, et clustering inchange (modified
+    k-means sur les topographies reconstruites). L'ecart avec le VAE dense
+    mesure alors l'apport de la non-linearite, et l'ecart VAE dense / VAE conv
+    celui du biais inductif convolutionnel.
+
+    On utilise une SVD sans centrage : les topographies normalisees par la GFP
+    contiennent deja x et -x de facon symetrique, leur moyenne est ~0, et
+    centrer introduirait une composante artificielle liee a la polarite.
+    """
+    x = np.asarray(topo, dtype=np.float64)
+    u, s, vt = np.linalg.svd(x, full_matrices=False)
+    basis = vt[:n_components]                      # (n_components, n_ch)
+    recon = (x @ basis.T) @ basis
+    explained = float((s[:n_components] ** 2).sum() / (s ** 2).sum())
+    return recon, dict(basis=basis, explained_variance_ratio=explained)
+
+
+def pca_modkmeans_group(bank, info, k: int, n_components: int = 8, seed: int = 0,
+                        two_stage: bool = True, n_init: int = 100):
+    """Pipeline classique applique aux topographies compressees lineairement."""
+    recon, meta = pca_compress(bank.topo, n_components)
+    compressed = bank.subset(np.arange(len(bank)))
+    compressed.topo = recon.astype(np.float32)
+    maps = modkmeans_group(compressed, info, k, seed=seed, two_stage=two_stage,
+                           n_init=n_init)
+    return maps, meta
+
+
 def modkmeans_group(bank, info, k: int, seed: int = 0, two_stage: bool = True,
                     n_init: int = 100) -> np.ndarray:
     """Cartes de groupe facon Pycrostates.
