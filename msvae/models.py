@@ -66,13 +66,17 @@ class BaseVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     @torch.no_grad()
     def encode_numpy(self, x: np.ndarray, batch_size: int = 4096) -> np.ndarray:
         """Encode en mode deterministe (retourne mu)."""
         self.eval()
         out = []
         for i in range(0, len(x), batch_size):
-            xb = torch.as_tensor(x[i:i + batch_size], dtype=torch.float32)
+            xb = torch.as_tensor(x[i:i + batch_size], dtype=torch.float32).to(self.device)
             out.append(self.encode(xb)[0].cpu().numpy())
         return np.concatenate(out, axis=0)
 
@@ -81,7 +85,7 @@ class BaseVAE(nn.Module):
         self.eval()
         out = []
         for i in range(0, len(z), batch_size):
-            zb = torch.as_tensor(z[i:i + batch_size], dtype=torch.float32)
+            zb = torch.as_tensor(z[i:i + batch_size], dtype=torch.float32).to(self.device)
             out.append(self.decode(zb).cpu().numpy())
         return np.concatenate(out, axis=0)
 
