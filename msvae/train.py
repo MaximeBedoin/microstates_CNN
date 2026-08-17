@@ -20,6 +20,8 @@ class TrainConfig:
     weight_decay: float = 1e-5
     patience: int = 10          # early stopping sur la loss de validation
     warmup_beta: int = 10       # montee lineaire de beta (evite le posterior collapse)
+    score_every: int = 0        # evalue le critere aval toutes les N epoques (0 = jamais)
+    select_by: str = "val_loss"  # 'val_loss' | 'score' : critere de restauration du meilleur etat
     seed: int = 0
     num_threads: int = 4        # CPU uniquement
     device: str = "auto"        # 'auto' | 'cpu' | 'cuda'
@@ -53,8 +55,8 @@ def _iterate(x: torch.Tensor, batch_size: int, rng: np.random.Generator,
 
 
 def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = None,
-              mask: np.ndarray | None = None, tcfg: TrainConfig | None = None
-              ) -> TrainResult:
+              mask: np.ndarray | None = None, tcfg: TrainConfig | None = None,
+              score_fn=None) -> TrainResult:
     """Entraine un VAE.
 
     `mask` : masque (S, S) des pixels internes (VAE conv uniquement).
@@ -115,7 +117,13 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
                         vagg[k] = vagg.get(k, 0.0) + v
                     vnb += 1
             row.update({f"val_{k}": v / vnb for k, v in vagg.items()})
+            if (score_fn is not None and tcfg.score_every
+                    and (epoch % tcfg.score_every == 0 or epoch == tcfg.epochs - 1)):
+                row["down_score"] = float(score_fn(model, cfg))
+                model.train()
             score = row["val_loss"]
+            if tcfg.select_by == "score" and "down_score" in row:
+                score = row["down_score"]
             if score < best_val - 1e-6:
                 best_val, best_epoch = score, epoch
                 best_state = copy.deepcopy(model.state_dict())
