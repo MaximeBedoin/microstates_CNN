@@ -78,3 +78,21 @@ def test_short_segments_are_removed():
     lengths = [e - s for _, s, e in _segments(seg.labels)]
     # tolerance : le premier et le dernier segment peuvent etre tronques
     assert min(lengths[1:-1]) >= 10
+
+
+def test_boundaries_exclude_truncated_segments_from_durations():
+    """Les segments qui touchent un bord d'epoch ne doivent pas compter dans
+    les durees moyennes (mais restent dans la couverture)."""
+    maps = _maps(k=2, n_ch=16)
+    # 4 blocs de 100 echantillons ; classe alternee toutes les 50 (200 ms)
+    labels = np.tile(np.repeat([0, 1], 50), 4)
+    data = maps[labels].T
+    seg = backfit(data, maps, 250.0, min_segment_ms=0.0)
+    bounds = np.arange(4) * 100
+    p_free = microstate_parameters(seg)
+    p_bnd = microstate_parameters(seg, bounds)
+    assert abs(p_free["coverage"].sum() - p_bnd["coverage"].sum()) < 1e-12
+    # sans bords : des segments de 200 ms sont mesures
+    assert np.nanmax(p_free["mean_duration_ms"]) > 100
+    # avec bords tous les 100 echantillons, tout segment touche un bord
+    assert np.all(np.isnan(p_bnd["mean_duration_ms"]))

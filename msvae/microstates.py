@@ -269,15 +269,19 @@ def microstate_parameters(seg: Segmentation, boundaries: np.ndarray | None = Non
     dur_s = 1.0 / seg.sfreq
     total_time = n * dur_s
 
-    bset = set(int(b) for b in (boundaries if boundaries is not None else []))
+    bnd = np.unique(np.asarray(boundaries if boundaries is not None else [],
+                                dtype=int))
     counts = np.zeros(k)
     durations = [[] for _ in range(k)]
     for cls, s, e in _segments(labels):
         if cls < 0:
             continue
-        # segment tronque par un bord de bloc : compte dans la couverture,
-        # pas dans les durees
-        truncated = (s in bset and s != 0) or (e in bset) or s == 0 or e == n
+        # un segment est tronque s'il touche le debut/la fin de
+        # l'enregistrement, s'il commence ou finit sur un bord de bloc, ou
+        # s'il enjambe un bord (artefact de la concatenation des epochs) :
+        # il compte alors dans la couverture, mais pas dans les durees
+        touches_boundary = bool(len(bnd)) and bool(((bnd >= s) & (bnd <= e)).any())
+        truncated = s == 0 or e == n or touches_boundary
         if not truncated:
             durations[cls].append((e - s) * dur_s)
         counts[cls] += 1

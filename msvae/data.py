@@ -108,14 +108,18 @@ def _standardize_eegbci(raw):
 def iter_eegbci(n_subjects: int = 40, runs=(1, 2), cache: SubjectCache | None = None,
                 raw_dir: Path | str = "cache/eegbci_raw", l_freq: float = 1.0,
                 h_freq: float = 40.0, subjects: list[int] | None = None,
+                epoch_length: float | None = 2.0, reject_ptp: float | None = 150e-6,
                 verbose: bool = True):
     """Genere les SubjectRecord d'EEGBCI (une condition par run).
 
     group = 'EO' (run 1, yeux ouverts) ou 'EC' (run 2, yeux fermes).
+    Les donnees sont decoupees en epochs de longueur fixe et les epochs
+    artefactees sont rejetees (pic-a-pic) ; les bords d'epoch sont conserves
+    dans `boundaries` pour ne pas fausser les durees de microstates.
     """
     import mne
 
-    from .preprocess import preprocess_raw
+    from .preprocess import clean_epochs, preprocess_raw
 
     mne.set_log_level("error")
     cache = cache or SubjectCache(tag="eegbci")
@@ -132,15 +136,20 @@ def iter_eegbci(n_subjects: int = 40, runs=(1, 2), cache: SubjectCache | None = 
                 raw = mne.io.read_raw_edf(path, preload=True, verbose="error")
                 _standardize_eegbci(raw)
                 raw = preprocess_raw(raw, l_freq, h_freq)
+                if epoch_length:
+                    data, bounds, dropped = clean_epochs(raw, epoch_length, reject_ptp)
+                else:
+                    data, bounds, dropped = raw.get_data(), np.array([0], int), 0
                 rec = SubjectRecord(subject=f"S{s:03d}", group=labels.get(run, str(run)),
-                                    data=raw.get_data().astype(np.float32),
+                                    data=data.astype(np.float32),
                                     sfreq=float(raw.info["sfreq"]),
                                     ch_names=list(raw.ch_names),
-                                    boundaries=np.array([0], dtype=int),
-                                    extra=dict(run=run))
+                                    boundaries=bounds.astype(int),
+                                    extra=dict(run=run, dropped_epochs=dropped))
                 cache.save(key, rec)
                 if verbose:
-                    print(f"  {key}: {rec.data.shape} @ {rec.sfreq} Hz")
+                    print(f"  {key}: {rec.data.shape} @ {rec.sfreq} Hz "
+                          f"({dropped} epochs rejetees)")
                 yield rec
             except Exception as exc:  # sujet indisponible : on continue
                 if verbose:

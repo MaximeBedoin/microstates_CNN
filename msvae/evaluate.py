@@ -108,32 +108,62 @@ def split_half_stability(fit_fn, subjects: np.ndarray, n_repeats: int = 10,
 
 # ------------------------------------------------------- comparaison groupes
 def group_comparison(params_by_subject: list[dict], groups: np.ndarray,
-                     keys=("mean_duration_ms", "occurrence_per_s", "coverage")):
-    """Test de Mann-Whitney par classe et par parametre entre deux groupes.
+                     keys=("mean_duration_ms", "occurrence_per_s", "coverage"),
+                     subjects: np.ndarray | None = None):
+    """Comparaison de deux groupes, par classe et par parametre.
 
-    Retourne aussi la taille d'effet (rank-biserial), plus informative que p
+    Si `subjects` est fourni et que chaque sujet apparait exactement une fois
+    dans chaque groupe (cas yeux ouverts / yeux fermes), le test est
+    **apparie** (Wilcoxon signed-rank), nettement plus puissant. Sinon
+    Mann-Whitney. La taille d'effet (rank-biserial) est plus informative que p
     sur de petits echantillons.
     """
-    from scipy.stats import mannwhitneyu
+    from scipy.stats import mannwhitneyu, wilcoxon
 
     groups = np.asarray(groups)
     g = np.unique(groups)
     if len(g) != 2:
         raise ValueError("group_comparison attend exactement deux groupes")
+
+    paired_subs = None
+    if subjects is not None:
+        subjects = np.asarray(subjects)
+        s0 = list(subjects[groups == g[0]])
+        s1 = list(subjects[groups == g[1]])
+        if len(s0) == len(set(s0)) == len(s1) == len(set(s1)) and set(s0) == set(s1):
+            paired_subs = sorted(set(s0))
+
     out = {}
     for key in keys:
-        vals = np.array([p[key] for p in params_by_subject])  # (n_subj, k)
+        vals = np.array([p[key] for p in params_by_subject], dtype=float)
         k = vals.shape[1]
         stats = []
         for c in range(k):
-            a = vals[groups == g[0], c]
-            b = vals[groups == g[1], c]
-            a, b = a[np.isfinite(a)], b[np.isfinite(b)]
-            if len(a) < 3 or len(b) < 3:
-                stats.append((np.nan, np.nan, np.nan))
-                continue
-            u, p = mannwhitneyu(a, b, alternative="two-sided")
-            rbc = 2 * u / (len(a) * len(b)) - 1  # rank-biserial correlation
-            stats.append((float(u), float(p), float(rbc)))
-        out[key] = dict(groups=tuple(g), stats=np.array(stats))
+            if paired_subs is not None:
+                i0 = {s: i for i, s in zip(np.flatnonzero(groups == g[0]),
+                                           subjects[groups == g[0]])}
+                i1 = {s: i for i, s in zip(np.flatnonzero(groups == g[1]),
+                                           subjects[groups == g[1]])}
+                a = np.array([vals[i0[s], c] for s in paired_subs])
+                b = np.array([vals[i1[s], c] for s in paired_subs])
+                ok = np.isfinite(a) & np.isfinite(b)
+                a, b = a[ok], b[ok]
+                if len(a) < 5 or np.allclose(a, b):
+                    stats.append((np.nan, np.nan, np.nan))
+                    continue
+                stat, p = wilcoxon(a, b)
+                eff = float(np.mean(np.sign(b - a)))  # proportion signee
+                stats.append((float(stat), float(p), eff))
+            else:
+                a = vals[groups == g[0], c]
+                b = vals[groups == g[1], c]
+                a, b = a[np.isfinite(a)], b[np.isfinite(b)]
+                if len(a) < 3 or len(b) < 3:
+                    stats.append((np.nan, np.nan, np.nan))
+                    continue
+                u, p = mannwhitneyu(a, b, alternative="two-sided")
+                stats.append((float(u), float(p), float(2 * u / (len(a) * len(b)) - 1)))
+        out[key] = dict(groups=tuple(g), stats=np.array(stats),
+                        paired=paired_subs is not None,
+                        n=len(paired_subs) if paired_subs else None)
     return out

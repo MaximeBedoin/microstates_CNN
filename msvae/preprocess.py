@@ -88,11 +88,40 @@ def extract_peaks(raw, subject: str, group: str = "", min_distance: int = 3,
                    group=group, ch_names=tuple(raw.ch_names))
 
 
-def epochs_to_continuous(epochs) -> np.ndarray:
-    """Concatene des Epochs en (n_ch, n_times) pour l'analyse temporelle.
+def epochs_to_continuous(epochs) -> tuple[np.ndarray, np.ndarray]:
+    """Concatene des Epochs en (n_ch, n_times) + indices de debut d'epoch.
 
     Attention : introduit des discontinuites aux bords d'epoch ; les segments
     a cheval sont ignores lors du calcul des durees (cf. `microstates`).
     """
     d = epochs.get_data(copy=False)
-    return np.concatenate(list(d), axis=1)
+    n_times = d.shape[2]
+    boundaries = np.arange(len(d)) * n_times
+    return np.concatenate(list(d), axis=1), boundaries
+
+
+def clean_epochs(raw, duration: float = 2.0, reject_ptp: float | None = 150e-6):
+    """Decoupe en epochs de longueur fixe et rejette les epochs artefactees.
+
+    Le critere est un simple pic-a-pic maximal sur les canaux EEG : c'est un
+    nettoyage grossier, suffisant pour du repos, mais qui ne remplace pas une
+    inspection ICA/visuelle sur des donnees cliniques.
+
+    Returns
+    -------
+    data : (n_ch, n_times) concatene
+    boundaries : indices de debut d'epoch (discontinuites)
+    n_dropped : nombre d'epochs rejetees
+    """
+    import mne
+
+    epochs = mne.make_fixed_length_epochs(raw, duration=duration, preload=True,
+                                          verbose="error")
+    n_before = len(epochs)
+    if reject_ptp is not None:
+        ptp = epochs.get_data(copy=False).ptp(axis=2).max(axis=1)
+        epochs = epochs[ptp <= reject_ptp]
+    if len(epochs) == 0:
+        raise ValueError("toutes les epochs ont ete rejetees")
+    data, boundaries = epochs_to_continuous(epochs)
+    return data, boundaries, n_before - len(epochs)

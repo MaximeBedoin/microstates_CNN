@@ -99,13 +99,16 @@ def build_bank(records, image_size: int, min_distance: int = 3) -> tuple[PeakBan
     info = info_from_record(records[0])
     projector = TopoProjector.from_info(info, size=image_size)
     peaksets = []
+    ref_names = list(records[0].ch_names)
     for rec in records:
+        if list(rec.ch_names) != ref_names:
+            print(f"  ! {rec.subject}/{rec.group} ignore : montage different")
+            continue
         raw = mne.io.RawArray(rec.data.astype(np.float64), info, verbose="error")
-        # identifiant unique par sujet ; la condition (groupe) reste separee
-        ps = extract_peaks(raw, subject=rec.subject, group=rec.group,
-                           min_distance=min_distance)
-        ps.times = ps.times + 0  # indices locaux au bloc
-        peaksets.append(ps)
+        # subject = identifiant du sujet (partage par les conditions) ;
+        # times = indices locaux a l'enregistrement
+        peaksets.append(extract_peaks(raw, subject=rec.subject, group=rec.group,
+                                      min_distance=min_distance))
     bank = PeakBank.from_peaksets(peaksets, projector)
     return bank, info
 
@@ -358,7 +361,7 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
         if len(np.unique(groups)) == 2:
             try:
                 results["group_comparison"][name] = _jsonable(
-                    evaluate.group_comparison(params, groups))
+                    evaluate.group_comparison(params, groups, subjects=subs))
             except Exception as exc:
                 results["group_comparison"][name] = str(exc)
 
