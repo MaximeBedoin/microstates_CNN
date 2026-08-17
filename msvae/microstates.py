@@ -26,35 +26,71 @@ def _reject_short_segments(labels: np.ndarray, corr_abs: np.ndarray,
                            min_samples: int) -> np.ndarray:
     """Supprime les segments trop courts, facon Pycrostates.
 
-    Les segments de duree < min_samples sont retires par ordre de duree
-    croissante et leurs echantillons reaffectes a la classe voisine
-    presentant la plus forte correlation.
+    Les segments de duree < min_samples sont traites par ordre de duree
+    croissante : leurs echantillons sont reaffectes a la classe voisine
+    presentant la plus forte correlation moyenne, puis fusionnes avec elle.
+    Implementation par liste chainee + tas binaire : O(n log n).
     """
-    if min_samples <= 1:
+    import heapq
+
+    if min_samples <= 1 or len(labels) == 0:
         return labels
-    labels = labels.copy()
     n = len(labels)
-    for _ in range(50):  # convergence en pratique en quelques passes
-        bounds = np.flatnonzero(np.diff(labels)) + 1
-        starts = np.concatenate([[0], bounds])
-        ends = np.concatenate([bounds, [n]])
-        lengths = ends - starts
-        short = np.flatnonzero(lengths < min_samples)
-        if len(short) == 0:
+    segs = _segments(labels)
+    m = len(segs)
+    if m == 1:
+        return labels
+
+    lab = np.array([s[0] for s in segs])
+    start = np.array([s[1] for s in segs])
+    end = np.array([s[2] for s in segs])
+    prev = np.arange(-1, m - 1)
+    nxt = np.concatenate([np.arange(1, m), [-1]])
+    alive = np.ones(m, dtype=bool)
+
+    heap = [(int(end[i] - start[i]), i) for i in range(m)]
+    heapq.heapify(heap)
+
+    def merge(a, b):
+        """Absorbe le segment b dans a (a precede ou suit b)."""
+        lo, hi = (a, b) if start[a] < start[b] else (b, a)
+        start[lo] = min(start[lo], start[hi])
+        end[lo] = max(end[lo], end[hi])
+        alive[hi] = False
+        nxt[lo] = nxt[hi] if hi != lo else nxt[lo]
+        if nxt[lo] != -1:
+            prev[nxt[lo]] = lo
+        return lo
+
+    while heap:
+        length, i = heapq.heappop(heap)
+        if not alive[i] or length != end[i] - start[i]:
+            continue          # entree perimee
+        if length >= min_samples:
+            break             # tous les segments restants sont assez longs
+        cands = [j for j in (prev[i], nxt[i]) if j != -1 and alive[j]]
+        if not cands:
             break
-        # traite le plus court d'abord
-        i = short[np.argmin(lengths[short])]
-        s, e = starts[i], ends[i]
-        cand = []
-        if i > 0:
-            cand.append(labels[starts[i - 1]])
-        if i < len(starts) - 1:
-            cand.append(labels[starts[i + 1]])
-        if not cand:
-            break
-        scores = [corr_abs[c, s:e].mean() for c in cand]
-        labels[s:e] = cand[int(np.argmax(scores))]
-    return labels
+        scores = [corr_abs[lab[j], start[i]:end[i]].mean() for j in cands]
+        j = cands[int(np.argmax(scores))]
+        lab[i] = lab[j]
+        cur = merge(j, i)
+        # les voisins peuvent maintenant porter la meme classe : on fusionne
+        for _ in range(2):
+            merged = False
+            for other in (prev[cur], nxt[cur]):
+                if other != -1 and alive[other] and lab[other] == lab[cur]:
+                    cur = merge(cur, other)
+                    merged = True
+                    break
+            if not merged:
+                break
+        heapq.heappush(heap, (int(end[cur] - start[cur]), cur))
+
+    out = np.empty(n, dtype=labels.dtype)
+    for i in np.flatnonzero(alive):
+        out[start[i]:end[i]] = lab[i]
+    return out
 
 
 @dataclass
@@ -90,6 +126,22 @@ def backfit(data: np.ndarray, maps: np.ndarray, sfreq: float,
     gfp = data.std(axis=0)
     return Segmentation(labels=labels, corr=corr, gfp=gfp, sfreq=sfreq,
                         n_maps=len(maps))
+
+
+def backfit_from_labels(data: np.ndarray, maps: np.ndarray, labels: np.ndarray,
+                        score: np.ndarray, sfreq: float,
+                        min_segment_ms: float = 30.0) -> Segmentation:
+    """Construit une Segmentation a partir d'une affectation deja calculee.
+
+    Sert au back-fitting *dans l'espace latent* : les labels viennent du
+    centroide latent le plus proche, mais la GEV reste definie a partir de la
+    correlation spatiale avec les cartes decodees, pour rester comparable au
+    back-fitting topographique.
+    """
+    min_samples = int(round(min_segment_ms * sfreq / 1000.0))
+    labels = _reject_short_segments(np.asarray(labels), score, min_samples)
+    return Segmentation(labels=labels, corr=spatial_correlation(data, maps),
+                        gfp=data.std(axis=0), sfreq=sfreq, n_maps=len(maps))
 
 
 # ---------------------------------------------------------------- parametres

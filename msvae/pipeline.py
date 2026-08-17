@@ -40,6 +40,8 @@ class ExperimentConfig:
     balance_percentile: float = 10.0
     epochs: int = 60
     arch_search: bool = True
+    search_epochs: int = 25         # recherche d'archi : entrainement raccourci
+    search_max_peaks: int = 12000   # ... et sur un sous-echantillon
     min_segment_ms: float = 30.0
     stability_repeats: int = 10
     stability_refit: bool = False   # re-entraine le VAE dans le split-half
@@ -141,8 +143,16 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
     search = None
     if cfg.arch_search:
         grid = default_grid(cfg, n_ch)
-        search = architecture_search(grid, train_bal.images, val_bal.images,
-                                     mask, tcfg)
+        # sous-echantillonnage + entrainement raccourci : la recherche compare
+        # des architectures, elle n'a pas besoin de la convergence finale
+        rng = np.random.default_rng(cfg.seed)
+        sel = np.arange(len(train_bal))
+        if len(sel) > cfg.search_max_peaks:
+            sel = rng.choice(sel, cfg.search_max_peaks, replace=False)
+        stcfg = TrainConfig(**{**tcfg.__dict__, "epochs": cfg.search_epochs,
+                               "verbose": False})
+        search = architecture_search(grid, train_bal.images[sel], val_bal.images,
+                                     mask, stcfg)
         best_cfg = search[0]["cfg"]
         print(f"  meilleure archi : latent={best_cfg.latent_dim} beta={best_cfg.beta} "
               f"width={best_cfg.base_width} (val_loss={search[0]['val_loss']:.4f})")
@@ -164,18 +174,39 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
     plotting.plot_training(res_conv.history, out / "figures" / "training_conv.png")
     plotting.plot_training(res_dense.history, out / "figures" / "training_dense.png")
 
+    # sauvegarde des modeles : permet de refaire les analyses aval sans
+    # re-entrainer (l'entrainement est le poste de cout dominant sur CPU)
+    import torch
+    torch.save(dict(state=res_conv.model.state_dict(), cfg=best_cfg.to_dict()),
+               out / "model_conv.pt")
+    torch.save(dict(state=res_dense.model.state_dict(), cfg=dense_cfg.to_dict()),
+               out / "model_dense.pt")
+
     return dict(conv=res_conv, dense=res_dense, conv_cfg=best_cfg,
                 dense_cfg=dense_cfg, search=search,
                 train_bank=train_bank, val_bank=val_bank, full_bal=full_bal)
 
 
 # --------------------------------------------------------------- evaluation
-def backfit_all(records, maps, min_segment_ms: float):
-    """Back-projection sur tous les sujets -> parametres par sujet."""
+def backfit_all(records, maps, min_segment_ms: float, latent_fit=None):
+    """Back-projection sur tous les sujets -> parametres par sujet.
+
+    `latent_fit` : None pour le back-fitting topographique standard (argmax de
+    |correlation spatiale|), ou un tuple (kind, model, centroids, projector,
+    image_scale) pour affecter chaque echantillon dans l'espace latent.
+    """
     params, gevs, groups, subjects = [], [], [], []
     for rec in records:
-        seg = microstates.backfit(rec.data.astype(np.float64), maps, rec.sfreq,
-                                  min_segment_ms=min_segment_ms)
+        data = rec.data.astype(np.float64)
+        if latent_fit is None:
+            seg = microstates.backfit(data, maps, rec.sfreq,
+                                      min_segment_ms=min_segment_ms)
+        else:
+            kind, model, centroids, projector, image_scale = latent_fit
+            z = cluster.encode_continuous(model, data, projector, kind, image_scale)
+            lab, score = cluster.latent_assignment(z, centroids)
+            seg = microstates.backfit_from_labels(data, maps, lab, score,
+                                                  rec.sfreq, min_segment_ms)
         p = microstates.microstate_parameters(seg, rec.boundaries)
         params.append(p)
         gevs.append(p["gev_total"])
@@ -247,13 +278,14 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
 
     print("[4/7] clustering latent + decodage")
     maps_by_method = {}
-    latent = {}
+    latent, centroids_by_method = {}, {}
     for kind, res in (("conv", fit["conv"]), ("dense", fit["dense"])):
         for mode in ("two_stage", "weighted"):
-            m, z, lab, _ = cluster.decoded_maps_from_bank(
+            m, z, lab, _, cen = cluster.decoded_maps_from_bank(
                 res.model, bank, cfg.k, mode=mode, seed=cfg.seed, kind=kind)
             maps_by_method[f"vae_{kind}_{mode}"] = m
             latent[f"{kind}_{mode}"] = (z, lab)
+            centroids_by_method[f"vae_{kind}_{mode}"] = (kind, res.model, cen)
     z, lab = latent["conv_two_stage"]
     plotting.plot_latent(z, lab, out / "figures" / "latent_conv.png",
                          "espace latent (VAE conv), clusters k-means")
@@ -289,10 +321,21 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
         for a in maps_by_method for b in maps_by_method if a < b}
 
     # back-projection et parametres
+    # methodes de back-fitting : topographique pour toutes les cartes, plus
+    # une variante "affectation dans le latent" pour les modeles VAE
+    backfit_jobs = [(name, m, None) for name, m in maps_by_method.items()]
+    for name in ("vae_conv_two_stage", "vae_dense_two_stage"):
+        if name in centroids_by_method:
+            kind, model, cen = centroids_by_method[name]
+            backfit_jobs.append((f"{name}_latentfit", maps_by_method[name],
+                                 (kind, model, cen, bank.projector,
+                                  bank.image_scale)))
+
     results["backfit"] = {}
     params_store = {}
-    for name, m in maps_by_method.items():
-        params, gevs, groups, subs = backfit_all(records, m, cfg.min_segment_ms)
+    for name, m, latent_fit in backfit_jobs:
+        params, gevs, groups, subs = backfit_all(records, m, cfg.min_segment_ms,
+                                                 latent_fit)
         params_store[name] = (params, groups, subs)
         agg = dict(
             gev_total_mean=float(np.mean(gevs)), gev_total_std=float(np.std(gevs)),

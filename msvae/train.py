@@ -131,10 +131,11 @@ def architecture_search(grid: list[VAEConfig], x_train, x_val, mask=None,
     """
     out = []
     for i, cfg in enumerate(grid):
-        if tcfg is None or tcfg.verbose:
-            print(f"[{i + 1}/{len(grid)}] {cfg.kind} latent={cfg.latent_dim} "
-                  f"beta={cfg.beta} width={cfg.base_width if cfg.kind == 'conv' else cfg.hidden_width}")
+        width = cfg.base_width if cfg.kind == "conv" else cfg.hidden_width
+        print(f"  [{i + 1}/{len(grid)}] {cfg.kind} latent={cfg.latent_dim} "
+              f"beta={cfg.beta} width={width}", flush=True)
         res = train_vae(cfg, x_train, x_val, mask, tcfg)
+        print(f"      val_loss={res.best_val:.4f} ({res.seconds:.0f}s)", flush=True)
         out.append({"cfg": cfg, "val_loss": res.best_val,
                     "val_recon": res.history[res.best_epoch].get("val_recon", np.nan)
                     if res.best_epoch >= 0 else np.nan,

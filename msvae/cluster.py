@@ -81,6 +81,36 @@ def decode_centroids(model, centroids: np.ndarray, projector=None,
     return maps / np.maximum(np.linalg.norm(maps, axis=1, keepdims=True), 1e-12)
 
 
+def encode_continuous(model, data: np.ndarray, projector, kind: str = "conv",
+                      image_scale: float = 1.0, batch: int = 8192) -> np.ndarray:
+    """Encode TOUS les echantillons d'un enregistrement continu.
+
+    data : (n_ch, n_times), re-reference en moyenne. Chaque echantillon est
+    normalise par sa GFP exactement comme les pics d'entrainement.
+    """
+    gfp = np.maximum(data.std(axis=0), 1e-20)
+    topo = (data / gfp).T.astype(np.float32)     # (n_times, n_ch)
+    out = []
+    for i in range(0, len(topo), batch):
+        chunk = topo[i:i + batch]
+        x = (projector.to_image(chunk)[:, None] / image_scale
+             if kind == "conv" else chunk)
+        out.append(model.encode_numpy(x))
+    return np.concatenate(out, axis=0)
+
+
+def latent_assignment(z: np.ndarray, centroids: np.ndarray):
+    """Affectation au centroide latent le plus proche + score de proximite.
+
+    Le score (dans [0, 1]) joue le role de la correlation pour le lissage des
+    segments courts.
+    """
+    d2 = ((z[:, None, :] - centroids[None]) ** 2).sum(-1)
+    labels = np.argmin(d2, axis=1)
+    score = 1.0 / (1.0 + np.sqrt(d2)).T          # (k, n_times)
+    return labels, score
+
+
 def decoded_maps_from_bank(model, bank, k, mode="two_stage", seed=0,
                            kind="conv", n_init=20):
     """Encode la banque de pics, clusterise, decode : renvoie (maps, z, labels, info)."""
@@ -90,4 +120,4 @@ def decoded_maps_from_bank(model, bank, k, mode="two_stage", seed=0,
                                             seed=seed, n_init=n_init)
     maps = decode_centroids(model, centroids, bank.projector, kind,
                             bank.image_scale)
-    return maps, z, labels, info
+    return maps, z, labels, info, centroids
