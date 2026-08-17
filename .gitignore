@@ -1,5 +1,11 @@
 __pycache__/
 *.pyc
-cache/
-results/
 *.egg-info/
+cache/
+# resultats : on versionne les runs de reference, pas les rodages
+results/*
+!results/synthetic/
+!results/eegbci/
+!results/diagnostics/
+results/smoke*/
+results/dbg/
