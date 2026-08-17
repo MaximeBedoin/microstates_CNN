@@ -24,6 +24,7 @@ def main():
     p.add_argument("--no-pycrostates", action="store_true")
     p.add_argument("--stability-refit", action="store_true")
     p.add_argument("--stability-repeats", type=int, default=10)
+    p.add_argument("--threads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="results/synthetic")
     a = p.parse_args()
@@ -35,7 +36,8 @@ def main():
         arch_search=not a.no_arch_search, run_pycrostates=not a.no_pycrostates,
         stability_refit=a.stability_refit, stability_repeats=a.stability_repeats,
         seed=a.seed, out_dir=a.out)
-    run_experiment(cfg, TrainConfig(epochs=a.epochs, seed=a.seed))
+    run_experiment(cfg, TrainConfig(epochs=a.epochs, seed=a.seed,
+                                   num_threads=a.threads))
 
 
 if __name__ == "__main__":
