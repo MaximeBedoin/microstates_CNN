@@ -245,6 +245,17 @@ qui en résulte, pas des données.
   architectures, on n'a pas besoin de la convergence finale. Puis
   **ré-entraînement final sur tous les sujets** avec la meilleure configuration
   (60 époques).
+- **Critère de sélection : la GEV sur les sujets de validation**, obtenue en
+  faisant tourner la chaîne aval complète pour chaque candidat (clustering
+  latent → décodage des centroïdes → back-fitting).
+  *Erreur corrigée en cours de route, à ne pas reproduire* : le classement se
+  faisait initialement sur la loss de validation. Or celle-ci vaut
+  `recon + β·KL` : deux configurations de β différents optimisent des
+  objectifs différents, et comparer leurs valeurs revient à choisir
+  mécaniquement le plus petit β (c'est exactement ce qui s'était produit :
+  latent = 16, β = 10⁻⁴ arrivait en tête). L'erreur de reconstruction seule
+  serait comparable entre configurations, mais favoriserait toujours le
+  goulot le plus large ; seul un critère aval, à K fixé, arbitre correctement.
   *Point fragile* : le ré-entraînement final inclut les sujets de validation,
   donc la loss de validation rapportée pour le modèle final n'est plus une
   estimation honnête. Elle ne sert qu'à la sélection d'architecture ; les
@@ -309,11 +320,41 @@ proxys ne prouve pas qu'on a retrouvé A/B/C/D au sens strict. Le check le plus
 informatif reste la comparaison avec les cartes obtenues par Pycrostates
 **sur exactement les mêmes données**.
 
-### 8.2 Ablation dense vs conv
+### 8.2 Ablation : plan factoriel à quatre bras
 
-Voir §4.3. Métriques comparées : GEV globale après back-fitting, stabilité
-split-half des prototypes, corrélation avec le ground truth (synthétique),
-corrélation avec les cartes Pycrostates (réel).
+Comparer directement le VAE convolutionnel au k-means classique confondrait
+**trois** différences à la fois : la représentation (image interpolée vs
+vecteur d'électrodes), la compression (goulot appris vs aucune), et l'espace
+de clustering (latent appris vs espace capteur). Un tel résultat ne dirait pas
+lequel des trois facteurs opère. On décompose donc :
+
+| Bras | Représentation | Compression | Clustering |
+|---|---|---|---|
+| `pycrostates` | 64 électrodes | aucune | modified k-means |
+| `pca8_modkmeans` | 64 électrodes | **linéaire**, rang 8 | modified k-means |
+| `vae_dense` | 64 électrodes | non linéaire, 8 | k-means latent |
+| `vae_conv` | image 32×32 | non linéaire, 8 | k-means latent |
+
+Les contrastes se lisent alors un par un :
+- 1 → 2 : effet de la **réduction de dimension** seule (clustering identique) ;
+- 2 → 3 : effet de la **non-linéarité** de la compression ;
+- 3 → 4 : effet du **biais inductif convolutionnel** — c'est la question du
+  projet, et c'est le seul contraste qui l'isole.
+
+Le bras PCA utilise une SVD **sans centrage** : les topographies normalisées
+par la GFP contiennent déjà x et −x de façon symétrique, leur moyenne est
+quasi nulle, et centrer introduirait une composante artificielle liée à la
+polarité.
+
+Métriques comparées sur chaque bras : GEV globale après back-fitting,
+stabilité split-half des prototypes, corrélation avec le ground truth
+(synthétique), corrélation avec les cartes Pycrostates (réel), et pouvoir
+discriminant entre groupes.
+
+*Note d'historique* : la spécification initiale ne demandait que le contraste
+3 → 4 (« VAE dense sur vecteurs, dimension latente identique »). Les bras 1 et
+2 ont été ajoutés pour rendre le plan interprétable ; le bras 1 existait déjà
+au titre de la comparaison externe (§8.3).
 
 ### 8.3 Comparaison externe Pycrostates
 
@@ -350,3 +391,11 @@ hongrois sur |r|. Deux modes :
 8. **Choix de K non traité** : tout est fait à K fixé (4 pour le sanity check).
    Les critères usuels (GEV coude, cross-validation, silhouette dans le latent)
    ne sont pas encore implémentés.
+9. **Une seule graine** par configuration : ni la variabilité d'initialisation
+   du VAE ni celle du k-means ne sont quantifiées. C'est la première chose à
+   ajouter dès qu'un GPU est disponible (le coût devient négligeable).
+10. **Le bras PCA partage le clustering de Pycrostates**, donc le contraste
+    2 → 3 mélange « non-linéarité » et « changement d'algorithme de
+    clustering » (modified k-means sur topographies vs k-means euclidien dans
+    le latent). Un bras supplémentaire — k-means euclidien sur les scores PCA
+    après canonicalisation du signe — isolerait complètement les deux.
