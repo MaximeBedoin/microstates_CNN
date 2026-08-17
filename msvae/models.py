@@ -32,10 +32,19 @@ class VAEConfig:
     n_channels_eeg: int = 64    # utilise par le VAE dense
     base_width: int = 16        # conv : largeur du premier bloc
     n_blocks: int = 3           # conv : nombre de blocs stride-2
+    kernel_size: int = 4        # conv : taille de noyau
     hidden_width: int = 256     # dense : largeur des couches cachees
     n_hidden: int = 2           # dense : nombre de couches cachees
     beta: float = 1e-3          # poids de la KL
     lambda_pol: float = 1.0     # poids de la consistance latente
+    loss_space: str = "image"   # conv : 'image' | 'topo'
+    # 'image' : MSE sur les pixels du disque. Attention, cela pondere le scalp
+    #   par l'AIRE en pixels et non par les electrodes : le modele optimise
+    #   alors la fidelite a des valeurs interpolees, donc inventees.
+    # 'topo'  : la sortie du decodeur est ramenee aux n_ch electrodes par
+    #   l'operateur lineaire fixe (matrice de lecture) et la MSE y est
+    #   calculee. L'objectif devient identique a celui du VAE dense, ce qui
+    #   rend l'ablation strictement comparable.
 
     def to_dict(self):
         return asdict(self)
@@ -100,10 +109,12 @@ class ConvVAE(BaseVAE):
     def __init__(self, cfg: VAEConfig):
         super().__init__(cfg)
         w, nb, s = cfg.base_width, cfg.n_blocks, cfg.image_size
+        k = cfg.kernel_size
+        pad = (k - 2) // 2  # conserve le facteur 2 exact du stride
         chans = [1] + [w * (2 ** i) for i in range(nb)]
         enc = []
         for i in range(nb):
-            enc += [nn.Conv2d(chans[i], chans[i + 1], 4, stride=2, padding=1),
+            enc += [nn.Conv2d(chans[i], chans[i + 1], k, stride=2, padding=pad),
                     nn.GroupNorm(min(8, chans[i + 1]), chans[i + 1]),
                     nn.SiLU()]
         self.enc = nn.Sequential(*enc)
@@ -116,8 +127,8 @@ class ConvVAE(BaseVAE):
         dec = []
         rch = chans[::-1]
         for i in range(nb):
-            out_c = rch[i + 1] if i < nb - 1 else rch[i + 1]
-            dec += [nn.ConvTranspose2d(rch[i], out_c, 4, stride=2, padding=1)]
+            out_c = rch[i + 1]
+            dec += [nn.ConvTranspose2d(rch[i], out_c, k, stride=2, padding=pad)]
             if i < nb - 1:
                 dec += [nn.GroupNorm(min(8, out_c), out_c), nn.SiLU()]
         self.dec = nn.Sequential(*dec)
@@ -223,12 +234,16 @@ def kl_divergence(mu, logvar):
 
 
 def vae_loss(model: BaseVAE, x, mask=None, beta: float | None = None,
-             lambda_pol: float | None = None):
+             lambda_pol: float | None = None, readout=None):
     """Loss complete + diagnostics.
 
     Un seul passage encodeur sur x et un sur -x (cout ~2x l'encodeur) :
     le second sert a la fois a la consistance latente et a mesurer
     l'invariance residuelle.
+
+    `readout` : matrice fixe (n_ch, S*S) ramenant une image aux electrodes.
+    Si elle est fournie (cfg.loss_space == 'topo'), la reconstruction est
+    evaluee sur les n_ch mesures reelles et non sur les pixels interpoles.
     """
     cfg = model.cfg
     beta = cfg.beta if beta is None else beta
@@ -240,7 +255,11 @@ def vae_loss(model: BaseVAE, x, mask=None, beta: float | None = None,
     if x_hat.shape != x.shape:
         x_hat = x_hat.view(x.shape)
 
-    recon = polarity_invariant_recon(x_hat, x, mask)
+    if readout is not None and x.dim() == 4:
+        recon = polarity_invariant_recon(x_hat.flatten(1) @ readout.T,
+                                         x.flatten(1) @ readout.T)
+    else:
+        recon = polarity_invariant_recon(x_hat, x, mask)
     kl = kl_divergence(mu, logvar)
 
     mu_neg, _ = model.encode(-x)

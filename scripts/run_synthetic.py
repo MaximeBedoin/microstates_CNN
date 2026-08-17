@@ -24,6 +24,11 @@ def main():
     p.add_argument("--no-pycrostates", action="store_true")
     p.add_argument("--stability-refit", action="store_true")
     p.add_argument("--stability-repeats", type=int, default=10)
+    p.add_argument("--loss-space", choices=["image", "topo"], default="image",
+                   help="espace de la loss de reconstruction du VAE conv")
+    p.add_argument("--select-epoch-by-score", action="store_true",
+                   help="selectionne l'epoque sur la GEV aval, pas sur la loss")
+    p.add_argument("--grid", choices=["default", "extended"], default="default")
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="results/synthetic")
@@ -35,6 +40,8 @@ def main():
         latent_dim=a.latent_dim, image_size=a.image_size,
         arch_search=not a.no_arch_search, run_pycrostates=not a.no_pycrostates,
         stability_refit=a.stability_refit, stability_repeats=a.stability_repeats,
+        loss_space=a.loss_space, select_epoch_by_score=a.select_epoch_by_score,
+        grid=a.grid,
         seed=a.seed, out_dir=a.out)
     run_experiment(cfg, TrainConfig(epochs=a.epochs, seed=a.seed,
                                    num_threads=a.threads))

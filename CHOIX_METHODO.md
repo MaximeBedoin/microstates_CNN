@@ -376,7 +376,84 @@ hongrois sur |r|. Deux modes :
 
 ---
 
-## 9. Points fragiles / à revoir en priorité
+## 9. Résultat du premier run complet, et ce qu'il faut en conclure
+
+Cohorte synthétique, 20 sujets × 60 s, K = 4, latent = 8 (β = 10⁻³ sélectionné
+sur GEV de validation), 42 364 pics.
+
+| Bras | GEV | vs ground truth | Stabilité split-half |
+|---|---:|---:|---:|
+| `pycrostates` | 0.688 | 0.985 | 0.992 |
+| `pca8_modkmeans` | 0.688 | 0.983 | 0.992 |
+| `vae_dense` | 0.678 | 0.976 | 0.876 |
+| `vae_conv` | 0.609–0.621 | 0.860–0.893 | 0.937 |
+
+Lecture des contrastes :
+- 1 → 2 : **la réduction à 8 dimensions ne coûte rien** (GEV identique à la
+  troisième décimale). Le goulot contraint est donc légitime en soi.
+- 2 → 3 : la non-linéarité ne gagne rien non plus (0.688 → 0.678).
+- 3 → 4 : le bras convolutionnel **perd** (0.976 → 0.86 sur le ground truth).
+
+### Ce résultat n'est PAS interprétable comme un échec du biais inductif
+
+Trois diagnostics menés ensuite l'interdisent :
+
+1. **Le décodage n'est pas en cause.** Cartes recalculées sans décodeur (1er
+   vecteur propre des topographies assignées) : conv 0.860 → 0.873, dense
+   0.976 → 0.978. L'inversion image → électrodes coûte 0.013, pas 0.11.
+2. **Le sur-entraînement est en cause.** La même configuration conv obtient
+   GEV = 0.6947 après 25 époques et 0.6224 après 60, sur les mêmes sujets de
+   validation, **pendant que son erreur de reconstruction continue de
+   baisser** (0.033, meilleure que celle du dense à 0.045). À 25 époques le
+   bras conv est à égalité avec le dense (0.6931).
+3. **β était à la borne de la grille** pour 2 dimensions latentes sur 3, avec
+   une tendance monotone : plus de pression KL = moins bonne reconstruction,
+   meilleure GEV.
+
+Formulation défendable : *avec ce protocole, l'objectif d'entraînement du VAE
+n'est pas aligné sur la tâche de clustering, et le bras convolutionnel en
+souffre davantage que le bras dense.* Rien de plus pour l'instant.
+
+### Trois causes candidates, toutes implémentées et à tester
+
+- **Objectif mal spécifié** (`loss_space='topo'`) : la MSE en espace image est
+  une intégrale sur l'aire du disque, pas sur les électrodes. Le modèle
+  optimise donc la fidélité à des valeurs **interpolées**, c'est-à-dire
+  inventées, dans les régions à faible densité de capteurs. La variante `topo`
+  ramène la sortie du décodeur aux n_ch électrodes par l'opérateur linéaire
+  fixe (matrice de lecture, différentiable), ce qui rend l'objectif
+  **identique** à celui du bras dense — l'ablation ne porte alors plus que sur
+  l'encodeur.
+- **Critère d'arrêt** (`select_epoch_by_score`) : sélection de l'époque sur la
+  GEV aval au lieu de la loss de validation.
+- **Architecture** (`grid='extended'`) : β jusqu'à 10⁻¹, profondeur 2 ou 3
+  blocs, noyaux 4 ou 6. Motivation : 3 blocs stride-2 réduisent 32×32 à
+  **4×4**, soit 16 positions spatiales, ce qui peut détruire l'orientation des
+  gradients qui distingue A de B ; et de petits noyaux n'atteignent une vue
+  globale qu'en empilant des couches, donc en perdant de la résolution.
+  L'effet mesuré de la largeur seule était de 0.027 de GEV, soit trois fois
+  moins que l'effet de la durée d'entraînement (0.073).
+
+### Hypothèse de fond à garder en tête
+
+Il se peut que le désaccord ne soit pas un problème de réglage. Le biais
+inductif convolutionnel, c'est **localité + équivariance par translation**.
+Or une topographie EEG est dominée par les plus basses fréquences spatiales
+(essentiellement des harmoniques sphériques de bas ordre), donc la localité
+n'est pas le bon prior ; et la translation n'est pas une symétrie des données,
+puisque déplacer un motif sur le scalp change son sens anatomique. Si le bras
+conv reste derrière après correction de l'objectif, c'est un résultat
+publiable en soi, et la suite naturelle est une famille d'architectures qui
+respecte la géométrie réelle : convolutions sphériques, ou réseau de graphe
+sur le graphe des électrodes.
+
+*Leçon de méthode* : le run de rodage (6 sujets, 4 époques) donnait l'ordre
+**inverse** (conv 0.96 vs dense 0.82 face au ground truth). Aucun run court
+ne doit servir à trancher cette question.
+
+---
+
+## 10. Points fragiles / à revoir en priorité
 
 1. **λ de l'inversion ridge** calibré sur un seul modèle (§3.2).
 2. **Proxys canoniques géométriques** au lieu des cartes publiées (§8.1).

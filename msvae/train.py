@@ -56,7 +56,7 @@ def _iterate(x: torch.Tensor, batch_size: int, rng: np.random.Generator,
 
 def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = None,
               mask: np.ndarray | None = None, tcfg: TrainConfig | None = None,
-              score_fn=None) -> TrainResult:
+              score_fn=None, readout: np.ndarray | None = None) -> TrainResult:
     """Entraine un VAE.
 
     `mask` : masque (S, S) des pixels internes (VAE conv uniquement).
@@ -79,6 +79,12 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
     mt = None
     if mask is not None and cfg.kind == "conv":
         mt = torch.as_tensor(mask.astype(np.float32))[None, None].to(device)
+    ro = None
+    if cfg.kind == "conv" and cfg.loss_space == "topo":
+        if readout is None:
+            raise ValueError("loss_space='topo' exige la matrice de lecture "
+                             "image -> electrodes (projector.readout_matrix())")
+        ro = torch.as_tensor(np.asarray(readout, dtype=np.float32)).to(device)
 
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=tcfg.epochs)
     best_state, best_val, best_epoch = None, np.inf, -1
@@ -96,7 +102,7 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
                 rng.choice([-1.0, 1.0], size=(len(xb),)).astype(np.float32)).to(device)
             xb = xb * sign.view(-1, *([1] * (xb.dim() - 1)))
             opt.zero_grad(set_to_none=True)
-            loss, diag = vae_loss(model, xb, mt, beta=beta)
+            loss, diag = vae_loss(model, xb, mt, beta=beta, readout=ro)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             opt.step()
@@ -112,7 +118,8 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
             with torch.no_grad():
                 vagg, vnb = {}, 0
                 for xb in _iterate(xv, 2048, rng, shuffle=False):
-                    _, diag = vae_loss(model, xb.to(device), mt, beta=cfg.beta)
+                    _, diag = vae_loss(model, xb.to(device), mt,
+                                          beta=cfg.beta, readout=ro)
                     for k, v in diag.items():
                         vagg[k] = vagg.get(k, 0.0) + v
                     vnb += 1
@@ -145,7 +152,8 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
 
 
 def architecture_search(grid: list[VAEConfig], x_train, x_val, mask=None,
-                        tcfg: TrainConfig | None = None, score_fn=None):
+                        tcfg: TrainConfig | None = None, score_fn=None,
+                        readout: np.ndarray | None = None):
     """Recherche d'architecture sur le split train/val (par sujet).
 
     Le classement N'UTILISE PAS la loss de validation : celle-ci vaut
@@ -165,8 +173,10 @@ def architecture_search(grid: list[VAEConfig], x_train, x_val, mask=None,
     for i, cfg in enumerate(grid):
         width = cfg.base_width if cfg.kind == "conv" else cfg.hidden_width
         print(f"  [{i + 1}/{len(grid)}] {cfg.kind} latent={cfg.latent_dim} "
-              f"beta={cfg.beta} width={width}", flush=True)
-        res = train_vae(cfg, x_train, x_val, mask, tcfg)
+              f"beta={cfg.beta} width={width} blocs={cfg.n_blocks} "
+              f"noyau={cfg.kernel_size} loss={cfg.loss_space}", flush=True)
+        res = train_vae(cfg, x_train, x_val, mask, tcfg, score_fn=score_fn,
+                        readout=readout)
         val_recon = (res.history[res.best_epoch].get("val_recon", np.nan)
                      if res.best_epoch >= 0 else np.nan)
         score = float(score_fn(res.model, cfg)) if score_fn is not None else val_recon

@@ -288,6 +288,18 @@ class TopoProjector:
         out = vals @ mat.T
         return out[0] if single else out
 
+    def readout_matrix(self, method: str = "ridge") -> np.ndarray:
+        """Matrice (n_ch, size*size) ramenant une image entiere aux electrodes.
+
+        Contrairement a `to_topo`, elle opere sur l'image aplatie complete
+        (zeros hors masque), ce qui en fait une couche lineaire fixe utilisable
+        directement dans la loss du VAE (cf. VAEConfig.loss_space == 'topo').
+        """
+        mat = {"ridge": self.P, "pinv": self.P_exact, "bilinear": self.S}[method]
+        full = np.zeros((len(self.ch_names), self.size ** 2), dtype=np.float32)
+        full[:, self.mask.ravel()] = mat
+        return full
+
     def as_dict(self) -> dict:
         return dict(ch_names=self.ch_names, size=self.size, xy=self.xy,
                     mask=self.mask, W=self.W, S=self.S, P=self.P,

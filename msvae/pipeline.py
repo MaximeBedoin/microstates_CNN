@@ -45,6 +45,10 @@ class ExperimentConfig:
     min_segment_ms: float = 30.0
     stability_repeats: int = 10
     stability_refit: bool = False   # re-entraine le VAE dans le split-half
+    loss_space: str = "image"       # 'image' | 'topo' (cf. VAEConfig.loss_space)
+    select_epoch_by_score: bool = False  # selectionne l'epoque sur la GEV aval
+    score_every: int = 5            # frequence d'evaluation du critere aval
+    grid: str = "default"           # 'default' | 'extended' 
     run_pycrostates: bool = True
     seed: int = 0
     out_dir: str = "results/synthetic"
@@ -121,11 +125,37 @@ def default_grid(cfg: ExperimentConfig, n_ch: int) -> list[VAEConfig]:
             grid.append(VAEConfig(kind="conv", latent_dim=latent,
                                   image_size=cfg.image_size, beta=beta,
                                   base_width=16, n_blocks=3,
-                                  n_channels_eeg=n_ch))
+                                  n_channels_eeg=n_ch, loss_space=cfg.loss_space))
     for width in (8, 32):
         grid.append(VAEConfig(kind="conv", latent_dim=cfg.latent_dim,
                               image_size=cfg.image_size, beta=1e-3,
-                              base_width=width, n_blocks=3, n_channels_eeg=n_ch))
+                              base_width=width, n_blocks=3, n_channels_eeg=n_ch,
+                              loss_space=cfg.loss_space))
+    return grid
+
+
+def extended_grid(cfg: ExperimentConfig, n_ch: int) -> list[VAEConfig]:
+    """Grille elargie, a lancer sur GPU.
+
+    Trois extensions motivees par les resultats du premier run :
+      * beta jusqu'a 1e-1 : l'optimum etait AU BORD de la grille initiale
+        (1e-2) pour deux dimensions latentes sur trois ;
+      * profondeur 2 en plus de 3 : trois blocs stride-2 reduisent 32x32 a
+        4x4, soit 16 positions spatiales, ce qui peut detruire l'orientation
+        des gradients qui distingue les cartes A et B ;
+      * noyaux 3/5/7 : le contenu d'une topographie est domine par les plus
+        BASSES frequences spatiales, or de petits noyaux n'atteignent une vue
+        globale qu'en empilant des couches, donc en perdant de la resolution.
+    """
+    grid = []
+    for latent in (8, 16):
+        for beta in (1e-3, 1e-2, 3e-2, 1e-1):
+            for n_blocks, kernel in ((3, 4), (2, 4), (2, 6), (3, 6)):
+                grid.append(VAEConfig(
+                    kind="conv", latent_dim=latent, image_size=cfg.image_size,
+                    beta=beta, base_width=16, n_blocks=n_blocks,
+                    kernel_size=kernel, n_channels_eeg=n_ch,
+                    loss_space=cfg.loss_space))
     return grid
 
 
@@ -158,6 +188,7 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
     n_ch = bank.topo.shape[1]
     tcfg = tcfg or TrainConfig(epochs=cfg.epochs, seed=cfg.seed)
     mask = bank.projector.mask
+    readout = bank.projector.readout_matrix() if cfg.loss_space == "topo" else None
 
     train_bank, val_bank = bank.split_subjects(cfg.val_frac, seed=cfg.seed)
     train_bal = train_bank.balanced(cfg.n_per_subject, cfg.balance_percentile,
@@ -167,7 +198,7 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
 
     search = None
     if cfg.arch_search:
-        grid = default_grid(cfg, n_ch)
+        grid = (extended_grid if cfg.grid == "extended" else default_grid)(cfg, n_ch)
         # sous-echantillonnage + entrainement raccourci : la recherche compare
         # des architectures, elle n'a pas besoin de la convergence finale
         rng = np.random.default_rng(cfg.seed)
@@ -183,7 +214,8 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
             score_fn = make_downstream_score(val_bal, val_records, cfg.k,
                                              cfg.min_segment_ms, cfg.seed)
         search = architecture_search(grid, train_bal.images[sel], val_bal.images,
-                                     mask, stcfg, score_fn=score_fn)
+                                     mask, stcfg, score_fn=score_fn,
+                                     readout=readout)
         best_cfg = search[0]["cfg"]
         print(f"  meilleure archi : latent={best_cfg.latent_dim} beta={best_cfg.beta} "
               f"width={best_cfg.base_width} (score={search[0]['score']:.4f}, "
@@ -191,7 +223,7 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
     else:
         best_cfg = VAEConfig(kind="conv", latent_dim=cfg.latent_dim,
                              image_size=cfg.image_size, beta=1e-3,
-                             n_channels_eeg=n_ch)
+                             n_channels_eeg=n_ch, loss_space=cfg.loss_space)
 
     dense_cfg = match_dense_to_conv(best_cfg, n_ch)
 
@@ -199,8 +231,20 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
     full_bal = bank.balanced(cfg.n_per_subject, cfg.balance_percentile, seed=cfg.seed)
     print(f"  entrainement final sur {len(full_bal)} pics "
           f"({len(full_bal.subjects)} sujets)")
-    res_conv = train_vae(best_cfg, full_bal.images, val_bal.images, mask, tcfg)
-    res_dense = train_vae(dense_cfg, full_bal.topo, val_bal.topo, None, tcfg)
+    ftcfg = tcfg
+    final_score_fn = None
+    if cfg.select_epoch_by_score and records is not None:
+        val_subs = set(val_bank.subjects)
+        val_records = [r for r in records if r.subject in val_subs]
+        final_score_fn = make_downstream_score(val_bal, val_records, cfg.k,
+                                               cfg.min_segment_ms, cfg.seed)
+        ftcfg = TrainConfig(**{**tcfg.__dict__, "select_by": "score",
+                               "score_every": cfg.score_every,
+                               "patience": 10 ** 6})
+    res_conv = train_vae(best_cfg, full_bal.images, val_bal.images, mask, ftcfg,
+                         score_fn=final_score_fn, readout=readout)
+    res_dense = train_vae(dense_cfg, full_bal.topo, val_bal.topo, None, ftcfg,
+                          score_fn=final_score_fn)
 
     (out / "figures").mkdir(parents=True, exist_ok=True)
     plotting.plot_training(res_conv.history, out / "figures" / "training_conv.png")
