@@ -128,11 +128,19 @@ def train_vae(cfg: VAEConfig, x_train: np.ndarray, x_val: np.ndarray | None = No
                     and (epoch % tcfg.score_every == 0 or epoch == tcfg.epochs - 1)):
                 row["down_score"] = float(score_fn(model, cfg))
                 model.train()
-            score = row["val_loss"]
-            if tcfg.select_by == "score" and "down_score" in row:
-                score = row["down_score"]
-            if score < best_val - 1e-6:
-                best_val, best_epoch = score, epoch
+            # Selection de l'etat a conserver. Les deux criteres n'ont NI la
+            # meme echelle NI le meme signe : il ne faut jamais les melanger
+            # dans la meme variable. En mode 'score', les epoques ou le critere
+            # aval n'a pas ete evalue ne participent tout simplement pas.
+            if tcfg.select_by == "score":
+                current = row.get("down_score")
+            else:
+                current = row["val_loss"]
+            if current is None:
+                history.append(row)
+                continue
+            if current < best_val - 1e-6:
+                best_val, best_epoch = current, epoch
                 best_state = copy.deepcopy(model.state_dict())
             elif epoch - best_epoch >= tcfg.patience:
                 history.append(row)

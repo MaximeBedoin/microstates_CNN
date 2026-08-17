@@ -107,3 +107,27 @@ def test_gfp_peaks_respect_min_distance():
     idx, gfp = find_gfp_peaks(data, min_distance=3, reject_percentile=None)
     assert np.diff(idx).min() >= 3
     assert len(gfp) == 5000
+
+
+def test_epoch_selection_by_downstream_score():
+    """En mode select_by='score', l'etat conserve doit etre celui de la
+    meilleure valeur du critere AVAL, jamais celui de la meilleure loss."""
+    from msvae.train import TrainConfig, train_vae
+
+    x = np.random.default_rng(0).standard_normal((256, 64)).astype(np.float32)
+    calls = {"n": 0}
+
+    def score_fn(model, cfg):
+        # minimum artificiel a la 3e evaluation (epoque 4)
+        calls["n"] += 1
+        return {1: -0.10, 2: -0.20, 3: -0.90, 4: -0.30}.get(calls["n"], -0.05)
+
+    tcfg = TrainConfig(epochs=8, score_every=2, select_by="score", patience=10 ** 6,
+                       verbose=False)
+    res = train_vae(VAEConfig(kind="dense", latent_dim=4, n_channels_eeg=64,
+                              hidden_width=32), x, x[:64], None, tcfg,
+                    score_fn=score_fn)
+    assert res.best_epoch == 4          # 3e evaluation : epoques 0, 2, 4
+    assert abs(res.best_val + 0.90) < 1e-9
+    scored = [h for h in res.history if "down_score" in h]
+    assert [h["epoch"] for h in scored] == [0, 2, 4, 6, 7]
