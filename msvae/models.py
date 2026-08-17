@@ -200,9 +200,8 @@ def polarity_invariant_recon(x_hat, x, mask=None, reduction="mean"):
     diff_p = (x_hat - x) ** 2
     diff_m = (x_hat + x) ** 2
     if mask is not None:
-        m = mask.to(diff_p.dtype)
-        denom = m.sum() / x.shape[0] if m.dim() < x.dim() else m.sum(
-            dim=tuple(range(1, m.dim())))
+        m = mask.to(diff_p.dtype).expand_as(x)
+        denom = m.flatten(1).sum(1).clamp_min(1.0)
         dp = (diff_p * m).flatten(1).sum(1) / denom
         dm = (diff_m * m).flatten(1).sum(1) / denom
     else:

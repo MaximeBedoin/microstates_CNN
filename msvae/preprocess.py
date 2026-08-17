@@ -100,12 +100,19 @@ def epochs_to_continuous(epochs) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate(list(d), axis=1), boundaries
 
 
-def clean_epochs(raw, duration: float = 2.0, reject_ptp: float | None = 150e-6):
+def clean_epochs(raw, duration: float = 2.0,
+                 reject_ptp: float | str | None = "auto"):
     """Decoupe en epochs de longueur fixe et rejette les epochs artefactees.
 
-    Le critere est un simple pic-a-pic maximal sur les canaux EEG : c'est un
-    nettoyage grossier, suffisant pour du repos, mais qui ne remplace pas une
-    inspection ICA/visuelle sur des donnees cliniques.
+    Le critere est le pic-a-pic maximal sur les canaux EEG : nettoyage
+    grossier, suffisant pour du repos, mais qui ne remplace pas une inspection
+    ICA/visuelle sur des donnees cliniques.
+
+    reject_ptp : float | 'auto' | None
+        Seuil absolu en volts, ou 'auto' pour un seuil robuste propre a
+        l'enregistrement (mediane + 3 x MAD normalise). Un seuil absolu est
+        difficile a fixer a l'avance : sur EEGBCI, 150 uV rejetait 58 % des
+        epochs et faisait disparaitre la moitie des enregistrements.
 
     Returns
     -------
@@ -119,8 +126,15 @@ def clean_epochs(raw, duration: float = 2.0, reject_ptp: float | None = 150e-6):
                                           verbose="error")
     n_before = len(epochs)
     if reject_ptp is not None:
-        ptp = epochs.get_data(copy=False).ptp(axis=2).max(axis=1)
-        epochs = epochs[ptp <= reject_ptp]
+        ptp = np.ptp(epochs.get_data(copy=False), axis=2).max(axis=1)
+        if isinstance(reject_ptp, str):
+            if reject_ptp != "auto":
+                raise ValueError("reject_ptp doit valoir un float, 'auto' ou None")
+            mad = np.median(np.abs(ptp - np.median(ptp))) * 1.4826
+            thr = np.median(ptp) + 3.0 * max(mad, 1e-12)
+        else:
+            thr = reject_ptp
+        epochs = epochs[ptp <= thr]
     if len(epochs) == 0:
         raise ValueError("toutes les epochs ont ete rejetees")
     data, boundaries = epochs_to_continuous(epochs)

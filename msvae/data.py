@@ -108,7 +108,8 @@ def _standardize_eegbci(raw):
 def iter_eegbci(n_subjects: int = 40, runs=(1, 2), cache: SubjectCache | None = None,
                 raw_dir: Path | str = "cache/eegbci_raw", l_freq: float = 1.0,
                 h_freq: float = 40.0, subjects: list[int] | None = None,
-                epoch_length: float | None = 2.0, reject_ptp: float | None = 150e-6,
+                epoch_length: float | None = 2.0,
+                reject_ptp: float | str | None = "auto",
                 verbose: bool = True):
     """Genere les SubjectRecord d'EEGBCI (une condition par run).
 

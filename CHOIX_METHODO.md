@@ -80,6 +80,22 @@ directement depuis le miroir S3 (`msvae/data.py:download_eegbci`).
   sensibilité.
 - **Référence moyenne** avant tout calcul de GFP (la GFP n'a de sens que sur
   données re-référencées en moyenne).
+- **Découpage en epochs de 2 s + rejet des epochs artefactées** (la
+  spécification part d'« epochs EEG nettoyées » ; EEGBCI est fourni en
+  continu). Critère : pic-à-pic maximal sur les canaux, avec un seuil
+  **adaptatif par enregistrement** (médiane + 3 × MAD normalisé).
+  *Décision revue en cours de route* : un seuil absolu de 150 µV, valeur
+  pourtant courante dans la littérature, rejetait **58 % des epochs** et
+  faisait disparaître la moitié des enregistrements EEGBCI. Le seuil robuste
+  rejette 6.4 % des epochs et conserve 56.2 s sur 60 s en moyenne, sur les
+  120 enregistrements.
+  *Point fragile* : un critère pic-à-pic ne remplace pas une ICA ; il laisse
+  passer des artefacts oculaires de faible amplitude, qui sont précisément
+  susceptibles de créer une classe de microstate frontale parasite.
+- **Les bords d'epoch sont propagés jusqu'au calcul des paramètres** : un
+  segment qui touche ou enjambe un bord compte dans la couverture mais pas
+  dans les durées moyennes, sans quoi la concaténation créerait des durées
+  artificielles.
 - **Pics de GFP** : maxima locaux avec distance minimale de 3 échantillons
   (spécification). À 160 Hz cela vaut 18.75 ms, à 250 Hz 12 ms.
   *Point fragile* : ce critère dépend de la fréquence d'échantillonnage, donc
