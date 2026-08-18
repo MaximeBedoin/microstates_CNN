@@ -233,7 +233,8 @@ def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
                   cache: SubjectCache | None = None, l_freq: float = 1.0,
                   h_freq: float = 40.0, epoch_length: float | None = 2.0,
                   reject_ptp: float | str | None = "auto", max_subjects=None,
-                  verbose: bool = True):
+                  resample_to: float | None = 250.0,
+                  max_duration: float | None = 240.0, verbose: bool = True):
     """Genere les SubjectRecord de ds004504 (AD / FTD / temoins, 19 canaux).
 
     Miltiadous et al., Data 8(6):95, 2023. Repos yeux fermes, 500 Hz, ~10 min
@@ -247,6 +248,26 @@ def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
     EEGBCI. Les resultats ne sont donc PAS comparables terme a terme a ceux de
     `results/synthetic/` — rendre une image 32x32 a partir de 19 capteurs rend
     la quasi-totalite des pixels interpolee.
+
+    `resample_to` : ces enregistrements font ~10 min a 500 Hz, soit environ dix
+    fois la charge d'un sujet synthetique, et les phases aval (back-fitting,
+    encodage continu, rendu image de chaque echantillon) sont lineaires en
+    nombre d'echantillons. Mesure : le run de rodage sur 6 sujets a consomme
+    plus de 35 min de CPU dans ces phases. Comme le signal est de toute facon
+    filtre a 40 Hz, 250 Hz reste tres au-dessus de Nyquist : on divise le cout
+    par deux sans rien perdre. Mettre None pour conserver 500 Hz.
+
+    `max_duration` : tronque chaque sujet a la MEME duree de signal propre.
+    Ce n'est pas qu'une economie, c'est un correctif de CONFOND. Deux des
+    features du banc de classification — la complexite de Lempel-Ziv et le taux
+    d'entropie — sont biaisees par la longueur de la sequence. Or le rejet
+    d'epochs artefactees ne retire pas la meme proportion chez tous (mesure sur
+    les premiers sujets : 3 a 11 %), et il n'y a aucune raison que les patients
+    et les temoins soient egalement artefactes — l'agitation est un symptome.
+    Sans troncature, un classifieur pourrait donc separer les groupes en lisant
+    la duree d'enregistrement exploitable plutot que l'etat cerebral. 4 min de
+    repos propre est par ailleurs l'ordre de grandeur usuel des etudes de
+    microstates. Mettre None pour tout garder.
     """
     import mne
 
@@ -262,7 +283,8 @@ def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
 
     for sid in keep:
         m = meta[sid]
-        key = f"{sid}_{m['group']}"
+        key = (f"{sid}_{m['group']}_{int(resample_to or 0)}"
+               f"_{int(max_duration or 0)}")
         if cache.has(key):
             yield cache.load(key)
             continue
@@ -273,10 +295,23 @@ def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
                                  if k in raw.ch_names})
             raw.set_montage("standard_1020", on_missing="warn")
             raw = preprocess_raw(raw, l_freq, h_freq)
+            # apres le filtre passe-bas, donc sans repliement
+            if resample_to and float(raw.info["sfreq"]) > resample_to:
+                raw.resample(resample_to)
             if epoch_length:
                 data, bounds, dropped = clean_epochs(raw, epoch_length, reject_ptp)
             else:
                 data, bounds, dropped = raw.get_data(), np.array([0], int), 0
+            n_keep = data.shape[1]
+            if max_duration:
+                n_keep = min(n_keep, int(max_duration * float(raw.info["sfreq"])))
+                data = data[:, :n_keep]
+                bounds = bounds[bounds < n_keep]
+            if max_duration and n_keep < int(max_duration * float(raw.info["sfreq"])):
+                # sujet plus court que la cible : il n'est PAS comparable aux
+                # autres sur les features sensibles a la longueur
+                print(f"  {sid}: seulement {n_keep / raw.info['sfreq']:.0f}s "
+                      f"de signal propre (cible {max_duration:.0f}s)", flush=True)
             rec = SubjectRecord(subject=sid, group=m["group"],
                                 data=data.astype(np.float32),
                                 sfreq=float(raw.info["sfreq"]),
