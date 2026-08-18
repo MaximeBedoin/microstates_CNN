@@ -8,6 +8,8 @@ results/*
 !results/eegbci/
 !results/diagnostics/
 !results/sensitivity_*/
+!results/synth_t*/
+!results/ds004504_*/
 results/smoke*/
 results/dbg/
 .venv/
