@@ -7,7 +7,9 @@ convolutionnel apprend un espace latent de faible dimension, et le clustering
 des microstates se fait dans cet espace latent.
 
 Les choix de conception, les alternatives écartées et les points fragiles sont
-documentés dans [`CHOIX_METHODO.md`](CHOIX_METHODO.md).
+documentés dans [`CHOIX_METHODO.md`](CHOIX_METHODO.md). Les hypothèses en cours
+sur le résultat de l'ablation, leur statut et la façon de les tester sont dans
+[`HYPOTHESES.md`](HYPOTHESES.md).
 
 ## Chaîne de traitement
 
