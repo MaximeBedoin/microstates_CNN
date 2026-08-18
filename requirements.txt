@@ -1,0 +1,10 @@
+# Versions utilisees pour produire results/synthetic (Python 3.11).
+# numpy < 2.3 : pycrostates 0.6.1 n'est pas compatible au-dela.
+numpy>=2.0,<2.3
+scipy>=1.13
+scikit-learn>=1.5
+matplotlib>=3.8
+mne>=1.8
+pycrostates>=0.6
+torch>=2.4
+pytest>=8.0

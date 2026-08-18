@@ -23,7 +23,7 @@ from msvae import plotting  # noqa: E402
 from msvae.models import VAEConfig, match_dense_to_conv  # noqa: E402
 from msvae.pipeline import (ExperimentConfig, build_bank, load_records,  # noqa: E402
                             make_downstream_score)
-from msvae.train import TrainConfig, train_vae  # noqa: E402
+from msvae.train import TrainConfig, resolve_device, train_vae  # noqa: E402
 
 
 def main():
@@ -34,6 +34,8 @@ def main():
     p.add_argument("--latent-dim", type=int, default=8)
     p.add_argument("--beta", type=float, default=1e-3)
     p.add_argument("--score-every", type=int, default=5)
+    p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--out", default="results/diagnostics")
     a = p.parse_args()
@@ -56,7 +58,9 @@ def main():
                          image_size=cfg.image_size, n_channels_eeg=bank.topo.shape[1])
     dense_cfg = match_dense_to_conv(conv_cfg, bank.topo.shape[1])
     tcfg = TrainConfig(epochs=a.epochs, seed=cfg.seed, num_threads=a.threads,
-                       score_every=a.score_every, patience=10 ** 6, verbose=True)
+                       score_every=a.score_every, patience=10 ** 6, verbose=True,
+                       device=a.device, batch_size=a.batch_size)
+    print(f"peripherique : {resolve_device(tcfg.device)}", flush=True)
 
     history = {}
     for kind, mcfg, x, mask in (("conv", conv_cfg, train_bal.images, bank.projector.mask),

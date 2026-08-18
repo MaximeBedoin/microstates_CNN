@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from msvae.pipeline import ExperimentConfig, run_experiment  # noqa: E402
-from msvae.train import TrainConfig  # noqa: E402
+from msvae.train import TrainConfig, resolve_device  # noqa: E402
 
 
 def main():
@@ -29,6 +29,10 @@ def main():
     p.add_argument("--select-epoch-by-score", action="store_true",
                    help="selectionne l'epoque sur la GEV aval, pas sur la loss")
     p.add_argument("--grid", choices=["default", "extended"], default="default")
+    p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
+                   help="'auto' utilise le GPU s'il est disponible")
+    p.add_argument("--batch-size", type=int, default=256,
+                   help="256 convient au CPU ; 1024-2048 exploite mieux un GPU")
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="results/synthetic")
@@ -43,8 +47,11 @@ def main():
         loss_space=a.loss_space, select_epoch_by_score=a.select_epoch_by_score,
         grid=a.grid,
         seed=a.seed, out_dir=a.out)
-    run_experiment(cfg, TrainConfig(epochs=a.epochs, seed=a.seed,
-                                   num_threads=a.threads))
+    tcfg = TrainConfig(epochs=a.epochs, seed=a.seed, num_threads=a.threads,
+                       device=a.device, batch_size=a.batch_size)
+    print(f"peripherique : {resolve_device(tcfg.device)}  "
+          f"(batch={tcfg.batch_size})")
+    run_experiment(cfg, tcfg)
 
 
 if __name__ == "__main__":

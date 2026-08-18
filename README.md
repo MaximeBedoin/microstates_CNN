@@ -76,39 +76,59 @@ l'objectif d'entraînement qui est en cause, pas la représentation — la même
 configuration conv atteignait 0.695 à 25 époques contre 0.622 à 60, sa
 reconstruction continuant de s'améliorer.
 
-**Reste à lancer**, dans cet ordre (les correctifs sont implémentés, il n'y a
-qu'à exécuter) :
+### Reprise en local sur GPU
+
+```bash
+git clone <url-du-depot> && cd microstates_CNN
+git checkout claude/eeg-microstate-vae-c6lz01
+
+python -m venv .venv && source .venv/bin/activate   # Windows : .venv\Scripts\activate
+pip install -r requirements.txt                     # torch CUDA : voir pytorch.org
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+python -m pytest tests -q        # 33 tests, ~30 s
+```
+
+Le GPU est détecté seul (`--device auto`) ; chaque script affiche le
+périphérique retenu au démarrage. Sur GPU, montez la taille de batch :
+`--batch-size 1024` (voire 2048), le modèle ne fait que ~110 k paramètres.
+
+**Les runs à lancer**, dans cet ordre — les correctifs sont implémentés, il n'y
+a qu'à exécuter. Durées indicatives sur un GPU de bureau :
 
 ```bash
 # 0. données réelles : le cache n'est pas versionné, à re-télécharger (~150 Mo)
 python scripts/download_eegbci.py --first 1 --last 60
 
-# 1. mécanisme : les courbes reconstruction vs GEV aval divergent-elles ?
-#    ~15 min CPU / ~2 min GPU  ->  results/diagnostics/figures/overtraining.png
-python scripts/diagnose_overtraining.py
+# 1. mécanisme : les courbes reconstruction et GEV aval divergent-elles ?  (~2 min)
+python scripts/diagnose_overtraining.py --batch-size 1024
+#    -> results/diagnostics/figures/overtraining.png
 
-# 2. objectif corrigé : loss sur les électrodes + époque choisie sur la GEV
-#    ~1 h 15 CPU / ~6 min GPU
+# 2. objectif corrigé : loss sur les électrodes + époque choisie sur la GEV  (~6 min)
 python scripts/run_synthetic.py --n-subjects 20 --duration 60 --epochs 60 \
     --loss-space topo --select-epoch-by-score --stability-refit \
-    --out results/synthetic_topoloss
+    --batch-size 1024 --out results/synthetic_topoloss
 
-# 3. grille d'architecture élargie (β jusqu'à 1e-1, profondeur 2/3, noyaux 4/6)
-#    32 configurations : à réserver au GPU
+# 3. grille d'architecture élargie : 32 configurations  (~40 min)
 python scripts/run_synthetic.py --grid extended --loss-space topo \
-    --select-epoch-by-score --out results/synthetic_extended
+    --select-epoch-by-score --batch-size 1024 --out results/synthetic_extended
 
-# 4. données réelles, mêmes réglages  (~50 min CPU / ~5 min GPU)
+# 4. données réelles, mêmes réglages  (~10 min)
 python scripts/run_eegbci.py --n-subjects 60 --epochs 30 --n-per-subject 1000 \
-    --no-arch-search --loss-space topo --select-epoch-by-score
+    --no-arch-search --loss-space topo --select-epoch-by-score --batch-size 1024
 
 # synthèse lisible de n'importe quel run
 python scripts/report.py results/<run>/results.json --out results/<run>/RESULTS.md
 ```
 
-Le code détecte le GPU automatiquement (`device='auto'`), aucun changement
-n'est nécessaire. Comptez un facteur ~15 : l'entraînement est le poste de coût
-dominant et le modèle ne fait que ~110 k paramètres sur des images 32×32.
+Le run 2 est le plus informatif : il se compare directement à
+`results/synthetic/` (même graine, même protocole, seul l'objectif change).
+
+**Piège à éviter en lisant les résultats** : ne pas sélectionner sur la GEV
+puis comparer les bras sur la GEV. Les bras `pycrostates` et `pca8_modkmeans`
+ne reçoivent aucun réglage, donc la comparaison doit porter sur une métrique
+tenue hors de la sélection — corrélation au ground truth, stabilité
+split-half, pouvoir discriminant. Voir `CHOIX_METHODO.md` §9.
 
 `scripts/run_pending.sh` enchaîne plusieurs runs en commitant les résultats
 après chacun — utile si l'exécution risque d'être interrompue.
