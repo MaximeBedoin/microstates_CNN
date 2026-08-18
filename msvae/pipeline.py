@@ -17,7 +17,7 @@ import numpy as np
 
 from . import baseline, cluster, evaluate, microstates, plotting
 from .features import PeakBank
-from .models import VAEConfig, match_dense_to_conv
+from .models import VAEConfig, match_dense_to_conv, match_token_to_conv
 from .preprocess import PeakSet, extract_peaks
 from .topo import TopoProjector
 from .train import TrainConfig, architecture_search, train_vae
@@ -27,7 +27,8 @@ from .train import TrainConfig, architecture_search, train_vae
 @dataclass
 class ExperimentConfig:
     name: str = "synthetic"
-    dataset: str = "synthetic"      # 'synthetic' | 'eegbci'
+    dataset: str = "synthetic"      # 'synthetic' | 'eegbci' | 'ds004504'
+    ds_groups: tuple = ("AD", "CTR")  # ds004504 : groupes a charger
     n_subjects: int = 20
     duration: float = 60.0          # synthetique uniquement
     snr: float = 1.0                # synthetique uniquement
@@ -50,6 +51,9 @@ class ExperimentConfig:
     score_every: int = 5            # frequence d'evaluation du critere aval
     grid: str = "default"           # 'default' | 'extended' 
     run_pycrostates: bool = True
+    run_token: bool = True          # bras attention sur electrodes (TokenVAE)
+    token_heads: int = 4
+    token_layers: int = 2
     seed: int = 0
     out_dir: str = "results/synthetic"
 
@@ -81,7 +85,7 @@ def info_from_record(rec, montage: str | None = None):
 
 def load_records(cfg: ExperimentConfig):
     """Retourne (records, ground_truth_maps | None)."""
-    from .data import iter_eegbci, iter_synthetic
+    from .data import iter_ds004504, iter_eegbci, iter_synthetic
 
     if cfg.dataset == "synthetic":
         recs, gt = iter_synthetic(n_subjects=cfg.n_subjects, duration=cfg.duration,
@@ -90,6 +94,12 @@ def load_records(cfg: ExperimentConfig):
         for r in recs:
             r.extra["montage"] = "biosemi64"
         return recs, gt
+    if cfg.dataset == "ds004504":
+        recs = list(iter_ds004504(groups=tuple(cfg.ds_groups),
+                                  max_subjects=cfg.n_subjects or None))
+        for r in recs:
+            r.extra["montage"] = "standard_1020"
+        return recs, None
     recs = list(iter_eegbci(n_subjects=cfg.n_subjects))
     for r in recs:
         r.extra["montage"] = "standard_1005"
@@ -246,6 +256,20 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
     res_dense = train_vae(dense_cfg, full_bal.topo, val_bal.topo, None, ftcfg,
                           score_fn=final_score_fn)
 
+    # bras token : attention sur les electrodes, sans image. Meme entree que le
+    # bras dense (vecteurs de capteurs) et meme decodeur, donc l'ablation porte
+    # exactement sur l'encodeur. Necessite les positions 3D des electrodes.
+    token_cfg = res_token = None
+    if cfg.run_token and records is not None:
+        pos = _electrode_positions(records[0], n_ch)
+        token_cfg = match_token_to_conv(best_cfg, n_ch, elec_pos=pos,
+                                        n_heads=cfg.token_heads,
+                                        n_layers=cfg.token_layers)
+        print(f"  bras token : d_model={token_cfg.d_model}, "
+              f"{cfg.token_layers} couches, {cfg.token_heads} tetes")
+        res_token = train_vae(token_cfg, full_bal.topo, val_bal.topo, None, ftcfg,
+                              score_fn=final_score_fn)
+
     (out / "figures").mkdir(parents=True, exist_ok=True)
     plotting.plot_training(res_conv.history, out / "figures" / "training_conv.png")
     plotting.plot_training(res_dense.history, out / "figures" / "training_dense.png")
@@ -257,10 +281,21 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
                out / "model_conv.pt")
     torch.save(dict(state=res_dense.model.state_dict(), cfg=dense_cfg.to_dict()),
                out / "model_dense.pt")
+    if res_token is not None:
+        torch.save(dict(state=res_token.model.state_dict(),
+                        cfg=token_cfg.to_dict()), out / "model_token.pt")
 
-    return dict(conv=res_conv, dense=res_dense, conv_cfg=best_cfg,
-                dense_cfg=dense_cfg, search=search,
-                train_bank=train_bank, val_bank=val_bank, full_bal=full_bal)
+    return dict(conv=res_conv, dense=res_dense, token=res_token,
+                conv_cfg=best_cfg, dense_cfg=dense_cfg, token_cfg=token_cfg,
+                search=search, train_bank=train_bank, val_bank=val_bank,
+                full_bal=full_bal)
+
+
+def _electrode_positions(record, n_ch: int) -> tuple:
+    """Positions 3D des electrodes, en tuple (JSON-serialisable via VAEConfig)."""
+    info = info_from_record(record)
+    pos = np.array([info["chs"][i]["loc"][:3] for i in range(n_ch)], dtype=float)
+    return tuple(map(tuple, pos))
 
 
 # --------------------------------------------------------------- evaluation
@@ -347,6 +382,16 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
                    n_params=fit["dense"].model.n_params(),
                    best_val=fit["dense"].best_val, seconds=fit["dense"].seconds,
                    final=fit["dense"].history[-1]))
+    if fit.get("token") is not None:
+        results["models"]["token"] = dict(
+            cfg={k: v for k, v in fit["token_cfg"].to_dict().items()
+                 if k != "elec_pos"},          # 64x3 flottants, inutile ici
+            n_params=fit["token"].model.n_params(),
+            best_val=fit["token"].best_val, seconds=fit["token"].seconds,
+            final=fit["token"].history[-1],
+            # LA quantite a lire pour trancher H9 : localite apprise par tete
+            # et par couche. Proche de 0 = le modele a renonce a la localite.
+            learned_locality=fit["token"].model.learned_locality().tolist())
     if fit["search"] is not None:
         results["arch_search"] = [
             dict(cfg=s["cfg"].to_dict(), val_loss=s["val_loss"],
@@ -356,7 +401,10 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
     print("[4/7] clustering latent + decodage")
     maps_by_method = {}
     latent, centroids_by_method = {}, {}
-    for kind, res in (("conv", fit["conv"]), ("dense", fit["dense"])):
+    arms = [("conv", fit["conv"]), ("dense", fit["dense"])]
+    if fit.get("token") is not None:
+        arms.append(("token", fit["token"]))
+    for kind, res in arms:
         for mode in ("two_stage", "weighted"):
             m, z, lab, _, cen = cluster.decoded_maps_from_bank(
                 res.model, bank, cfg.k, mode=mode, seed=cfg.seed, kind=kind)
@@ -474,7 +522,7 @@ def run_stability(cfg: ExperimentConfig, bank, info, fit, tcfg=None) -> dict:
                 bal = sub_bank.balanced(cfg.n_per_subject, cfg.balance_percentile,
                                         seed=cfg.seed)
                 x = bal.images if kind == "conv" else bal.topo
-                mcfg = fit["conv_cfg"] if kind == "conv" else fit["dense_cfg"]
+                mcfg = fit[f"{kind}_cfg"]
                 m = train_vae(mcfg, x, None, mask if kind == "conv" else None,
                               tcfg).model
             return cluster.decoded_maps_from_bank(m, sub_bank, cfg.k,
@@ -483,7 +531,8 @@ def run_stability(cfg: ExperimentConfig, bank, info, fit, tcfg=None) -> dict:
         return fn
 
     n_rep = cfg.stability_repeats
-    for kind in ("conv", "dense"):
+    kinds = ["conv", "dense"] + (["token"] if fit.get("token") is not None else [])
+    for kind in kinds:
         model = None if cfg.stability_refit else fit[kind].model
         reps = max(2, n_rep // 4) if cfg.stability_refit else n_rep
         out[f"vae_{kind}"] = _jsonable(evaluate.split_half_stability(

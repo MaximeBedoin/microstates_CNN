@@ -1,0 +1,461 @@
+{
+  "run": "results\\synthetic",
+  "dataset": "synthetic",
+  "k": 4,
+  "positive": "G2",
+  "n_subjects": 20,
+  "n_positive": 10,
+  "n_splits": 5,
+  "n_repeats": 10,
+  "auc": {
+    "vae_conv_two_stage": 0.9700000000000001,
+    "vae_conv_weighted": 0.9400000000000001,
+    "vae_dense_two_stage": 0.99,
+    "vae_dense_weighted": 0.99,
+    "pycrostates": 0.99,
+    "pca8_modkmeans": 0.9800000000000001,
+    "ground_truth": 1.0,
+    "spectral_global": 1.0,
+    "spectral_channel": 1.0
+  },
+  "auc_sd_repeats": {
+    "vae_conv_two_stage": 0.05034326612809746,
+    "vae_conv_weighted": 0.05329165037789689,
+    "vae_dense_two_stage": 0.020248456731316606,
+    "vae_dense_weighted": 0.029439202887759468,
+    "pycrostates": 0.02110818693198342,
+    "pca8_modkmeans": 0.024585451886114357,
+    "ground_truth": 0.009486832980505146,
+    "spectral_global": 0.0,
+    "spectral_channel": 0.0
+  },
+  "auc_ci": {
+    "vae_conv_two_stage": [
+      0.888888888888889,
+      1.0
+    ],
+    "vae_conv_weighted": [
+      0.7899469696969696,
+      1.0
+    ],
+    "vae_dense_two_stage": [
+      0.9393939393939394,
+      1.0
+    ],
+    "vae_dense_weighted": [
+      0.9393939393939393,
+      1.0
+    ],
+    "pycrostates": [
+      0.9393939393939394,
+      1.0
+    ],
+    "pca8_modkmeans": [
+      0.9099772727272728,
+      1.0
+    ],
+    "ground_truth": [
+      0.9999999999999999,
+      1.0
+    ],
+    "spectral_global": [
+      0.9999999999999999,
+      1.0
+    ],
+    "spectral_channel": [
+      0.9999999999999999,
+      1.0
+    ]
+  },
+  "pairwise": {
+    "vae_conv_two_stage - vae_conv_weighted": {
+      "delta": 0.030000000000000027,
+      "ci": [
+        -0.059535714285714296,
+        0.16004040404040396
+      ],
+      "p_two_sided": 0.701
+    },
+    "vae_conv_two_stage - vae_dense_two_stage": {
+      "delta": -0.019999999999999907,
+      "ci": [
+        -0.09532967032967032,
+        0.0357142857142857
+      ],
+      "p_two_sided": 0.807
+    },
+    "vae_conv_two_stage - vae_dense_weighted": {
+      "delta": -0.019999999999999907,
+      "ci": [
+        -0.09532967032967032,
+        0.0357142857142857
+      ],
+      "p_two_sided": 0.815
+    },
+    "vae_conv_two_stage - pycrostates": {
+      "delta": -0.019999999999999907,
+      "ci": [
+        -0.09532967032967042,
+        0.0357142857142857
+      ],
+      "p_two_sided": 0.817
+    },
+    "vae_conv_two_stage - pca8_modkmeans": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.08002020202020209,
+        0.04761904761904756
+      ],
+      "p_two_sided": 1.079
+    },
+    "vae_conv_two_stage - ground_truth": {
+      "delta": -0.029999999999999916,
+      "ci": [
+        -0.11111111111111105,
+        0.0
+      ],
+      "p_two_sided": 0.588
+    },
+    "vae_conv_two_stage - spectral_global": {
+      "delta": -0.029999999999999916,
+      "ci": [
+        -0.11111111111111105,
+        0.0
+      ],
+      "p_two_sided": 0.589
+    },
+    "vae_conv_two_stage - spectral_channel": {
+      "delta": -0.029999999999999916,
+      "ci": [
+        -0.11111111111111105,
+        0.0
+      ],
+      "p_two_sided": 0.588
+    },
+    "vae_conv_weighted - vae_dense_two_stage": {
+      "delta": -0.04999999999999993,
+      "ci": [
+        -0.1875,
+        0.0
+      ],
+      "p_two_sided": 0.486
+    },
+    "vae_conv_weighted - vae_dense_weighted": {
+      "delta": -0.04999999999999993,
+      "ci": [
+        -0.1875,
+        0.0
+      ],
+      "p_two_sided": 0.483
+    },
+    "vae_conv_weighted - pycrostates": {
+      "delta": -0.04999999999999993,
+      "ci": [
+        -0.1875,
+        1.1102230246251565e-16
+      ],
+      "p_two_sided": 0.481
+    },
+    "vae_conv_weighted - pca8_modkmeans": {
+      "delta": -0.040000000000000036,
+      "ci": [
+        -0.16161616161616166,
+        0.010101010101010166
+      ],
+      "p_two_sided": 0.542
+    },
+    "vae_conv_weighted - ground_truth": {
+      "delta": -0.05999999999999994,
+      "ci": [
+        -0.21005303030303038,
+        0.0
+      ],
+      "p_two_sided": 0.411
+    },
+    "vae_conv_weighted - spectral_global": {
+      "delta": -0.05999999999999994,
+      "ci": [
+        -0.21005303030303038,
+        0.0
+      ],
+      "p_two_sided": 0.415
+    },
+    "vae_conv_weighted - spectral_channel": {
+      "delta": -0.05999999999999994,
+      "ci": [
+        -0.21005303030303038,
+        0.0
+      ],
+      "p_two_sided": 0.412
+    },
+    "vae_dense_two_stage - vae_dense_weighted": {
+      "delta": 0.0,
+      "ci": [
+        -1.1102230246251565e-16,
+        1.1102230246251565e-16
+      ],
+      "p_two_sided": 1.833
+    },
+    "vae_dense_two_stage - pycrostates": {
+      "delta": 0.0,
+      "ci": [
+        -1.1102230246251565e-16,
+        1.1102230246251565e-16
+      ],
+      "p_two_sided": 1.832
+    },
+    "vae_dense_two_stage - pca8_modkmeans": {
+      "delta": 0.009999999999999898,
+      "ci": [
+        -1.1102230246251565e-16,
+        0.053333333333333344
+      ],
+      "p_two_sided": 1.115
+    },
+    "vae_dense_two_stage - ground_truth": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606055,
+        0.0
+      ],
+      "p_two_sided": 1.139
+    },
+    "vae_dense_two_stage - spectral_global": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606055,
+        0.0
+      ],
+      "p_two_sided": 1.139
+    },
+    "vae_dense_two_stage - spectral_channel": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606055,
+        0.0
+      ],
+      "p_two_sided": 1.134
+    },
+    "vae_dense_weighted - pycrostates": {
+      "delta": 0.0,
+      "ci": [
+        -1.1102230246251565e-16,
+        1.1102230246251565e-16
+      ],
+      "p_two_sided": 1.855
+    },
+    "vae_dense_weighted - pca8_modkmeans": {
+      "delta": 0.009999999999999898,
+      "ci": [
+        -1.1102230246251565e-16,
+        0.053333333333333344
+      ],
+      "p_two_sided": 1.13
+    },
+    "vae_dense_weighted - ground_truth": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606066,
+        0.0
+      ],
+      "p_two_sided": 1.131
+    },
+    "vae_dense_weighted - spectral_global": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606066,
+        0.0
+      ],
+      "p_two_sided": 1.132
+    },
+    "vae_dense_weighted - spectral_channel": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606066,
+        0.0
+      ],
+      "p_two_sided": 1.128
+    },
+    "pycrostates - pca8_modkmeans": {
+      "delta": 0.009999999999999898,
+      "ci": [
+        -1.1102230246251565e-16,
+        0.053333333333333344
+      ],
+      "p_two_sided": 1.135
+    },
+    "pycrostates - ground_truth": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606055,
+        0.0
+      ],
+      "p_two_sided": 1.134
+    },
+    "pycrostates - spectral_global": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606055,
+        0.0
+      ],
+      "p_two_sided": 1.136
+    },
+    "pycrostates - spectral_channel": {
+      "delta": -0.010000000000000009,
+      "ci": [
+        -0.06060606060606055,
+        0.0
+      ],
+      "p_two_sided": 1.137
+    },
+    "pca8_modkmeans - ground_truth": {
+      "delta": -0.019999999999999907,
+      "ci": [
+        -0.09002272727272724,
+        0.0
+      ],
+      "p_two_sided": 0.843
+    },
+    "pca8_modkmeans - spectral_global": {
+      "delta": -0.019999999999999907,
+      "ci": [
+        -0.09002272727272724,
+        0.0
+      ],
+      "p_two_sided": 0.848
+    },
+    "pca8_modkmeans - spectral_channel": {
+      "delta": -0.019999999999999907,
+      "ci": [
+        -0.09002272727272724,
+        0.0
+      ],
+      "p_two_sided": 0.842
+    },
+    "ground_truth - spectral_global": {
+      "delta": 0.0,
+      "ci": [
+        -1.1102230246251565e-16,
+        1.1102230246251565e-16
+      ],
+      "p_two_sided": 1.934
+    },
+    "ground_truth - spectral_channel": {
+      "delta": 0.0,
+      "ci": [
+        -1.1102230246251565e-16,
+        0.0
+      ],
+      "p_two_sided": 1.949
+    },
+    "spectral_global - spectral_channel": {
+      "delta": 0.0,
+      "ci": [
+        -1.1102230246251565e-16,
+        0.0
+      ],
+      "p_two_sided": 1.938
+    }
+  },
+  "permutation": {
+    "vae_conv_two_stage": {
+      "mean": 0.47000000000000003,
+      "sd": 0.08888194417315592,
+      "aucs": [
+        0.48,
+        0.33999999999999997,
+        0.56,
+        0.54,
+        0.43
+      ]
+    },
+    "vae_conv_weighted": {
+      "mean": 0.442,
+      "sd": 0.15401298646542763,
+      "aucs": [
+        0.52,
+        0.45999999999999996,
+        0.47,
+        0.58,
+        0.18
+      ]
+    },
+    "vae_dense_two_stage": {
+      "mean": 0.5440000000000002,
+      "sd": 0.12177848742696717,
+      "aucs": [
+        0.68,
+        0.66,
+        0.4,
+        0.4700000000000001,
+        0.51
+      ]
+    },
+    "vae_dense_weighted": {
+      "mean": 0.532,
+      "sd": 0.13461054936371072,
+      "aucs": [
+        0.64,
+        0.4699999999999999,
+        0.41000000000000003,
+        0.71,
+        0.42999999999999994
+      ]
+    },
+    "pycrostates": {
+      "mean": 0.552,
+      "sd": 0.1658915308266218,
+      "aucs": [
+        0.5900000000000001,
+        0.37,
+        0.41000000000000003,
+        0.7800000000000001,
+        0.61
+      ]
+    },
+    "pca8_modkmeans": {
+      "mean": 0.532,
+      "sd": 0.1693221781102523,
+      "aucs": [
+        0.59,
+        0.36,
+        0.36,
+        0.75,
+        0.6
+      ]
+    },
+    "ground_truth": {
+      "mean": 0.582,
+      "sd": 0.15927962832704,
+      "aucs": [
+        0.76,
+        0.41000000000000003,
+        0.41999999999999993,
+        0.6900000000000001,
+        0.63
+      ]
+    },
+    "spectral_global": {
+      "mean": 0.6180000000000001,
+      "sd": 0.17166828478201793,
+      "aucs": [
+        0.6300000000000001,
+        0.5,
+        0.41000000000000003,
+        0.7000000000000001,
+        0.8500000000000001
+      ]
+    },
+    "spectral_channel": {
+      "mean": 0.514,
+      "sd": 0.1451895313030523,
+      "aucs": [
+        0.5,
+        0.52,
+        0.28,
+        0.64,
+        0.63
+      ]
+    }
+  }
+}

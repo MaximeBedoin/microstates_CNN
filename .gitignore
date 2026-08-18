@@ -9,3 +9,4 @@ results/*
 !results/diagnostics/
 results/smoke*/
 results/dbg/
+.venv/

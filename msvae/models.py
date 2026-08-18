@@ -26,15 +26,19 @@ import torch.nn.functional as F
 # --------------------------------------------------------------------- config
 @dataclass
 class VAEConfig:
-    kind: str = "conv"          # 'conv' | 'dense'
+    kind: str = "conv"          # 'conv' | 'dense' | 'token'
     latent_dim: int = 8
     image_size: int = 32
-    n_channels_eeg: int = 64    # utilise par le VAE dense
+    n_channels_eeg: int = 64    # utilise par les VAE dense et token
     base_width: int = 16        # conv : largeur du premier bloc
     n_blocks: int = 3           # conv : nombre de blocs stride-2
     kernel_size: int = 4        # conv : taille de noyau
     hidden_width: int = 256     # dense : largeur des couches cachees
     n_hidden: int = 2           # dense : nombre de couches cachees
+    d_model: int = 32           # token : dimension des tokens
+    n_heads: int = 4            # token : nombre de tetes d'attention
+    n_layers: int = 2           # token : nombre de blocs d'attention
+    elec_pos: tuple = ()        # token : positions 3D des electrodes (n_ch, 3)
     beta: float = 1e-3          # poids de la KL
     lambda_pol: float = 1.0     # poids de la consistance latente
     loss_space: str = "image"   # conv : 'image' | 'topo'
@@ -175,8 +179,141 @@ class DenseVAE(BaseVAE):
         return self.dec(z)
 
 
+# ----------------------------------------------------------------- token VAE
+class _DistanceBiasedAttention(nn.Module):
+    """Attention multi-tetes biaisee par la distance inter-electrodes.
+
+    logit_ij = q_i . k_j / sqrt(d) - softplus(gamma_h) * d_ij
+
+    C'est le coeur de l'argument. La localite n'est plus une hypothese
+    d'architecture (comme dans une convolution, ou elle est cablee et non
+    negociable) mais un PARAMETRE APPRIS, lisible apres entrainement :
+
+      gamma grand  -> le modele a choisi un traitement local ;
+      gamma  ~ 0   -> attention uniforme, melange global, la localite ne sert
+                      a rien.
+
+    Si l'argument des basses frequences spatiales est correct (une topographie
+    est dominee par des harmoniques spheriques de bas ordre), gamma doit tendre
+    vers 0. On obtient donc une mesure la ou la demarche par elimination ne
+    donnait qu'une conclusion par defaut.
+    """
+
+    def __init__(self, d_model: int, n_heads: int):
+        super().__init__()
+        if d_model % n_heads:
+            raise ValueError("d_model doit etre divisible par n_heads")
+        self.h, self.dh = n_heads, d_model // n_heads
+        self.qkv = nn.Linear(d_model, 3 * d_model)
+        self.proj = nn.Linear(d_model, d_model)
+        # initialise a softplus(0) = 0.69 : un biais local modere, que
+        # l'entrainement peut annuler ou renforcer librement
+        self.gamma = nn.Parameter(torch.zeros(n_heads))
+
+    def forward(self, h, dist):
+        b, n, d = h.shape
+        qkv = self.qkv(h).reshape(b, n, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        logits = (q @ k.transpose(-2, -1)) / self.dh ** 0.5
+        bias = nn.functional.softplus(self.gamma).view(1, self.h, 1, 1) * dist
+        att = torch.softmax(logits - bias, dim=-1)
+        out = (att @ v).transpose(1, 2).reshape(b, n, d)
+        return self.proj(out)
+
+
+class _TokenBlock(nn.Module):
+    """Bloc pre-norm : attention biaisee par la distance, puis MLP."""
+
+    def __init__(self, d_model: int, n_heads: int, mlp_ratio: int = 2):
+        super().__init__()
+        self.n1 = nn.LayerNorm(d_model)
+        self.att = _DistanceBiasedAttention(d_model, n_heads)
+        self.n2 = nn.LayerNorm(d_model)
+        self.mlp = nn.Sequential(nn.Linear(d_model, mlp_ratio * d_model), nn.SiLU(),
+                                 nn.Linear(mlp_ratio * d_model, d_model))
+
+    def forward(self, h, dist):
+        h = h + self.att(self.n1(h), dist)
+        return h + self.mlp(self.n2(h))
+
+
+class TokenVAE(BaseVAE):
+    """VAE a attention sur les ELECTRODES, sans passer par une image.
+
+    Chaque electrode est un token : (valeur mesuree, position 3D). Il n'y a
+    donc aucune interpolation, aucun masque, aucun bord a padding zero, et
+    aucune inversion image -> electrodes a calibrer. L'objectif est nativement
+    en espace capteur, donc identique a celui du bras dense : l'ablation porte
+    exactement sur l'encodeur, ce que `loss_space='topo'` cherchait a approcher.
+
+    La position est absolue et encodee a partir des coordonnees, donc aucune
+    equivariance par translation n'est imposee — deplacer un motif sur le scalp
+    change bien son sens, contrairement a ce que suppose une convolution. Et
+    comme un token est un couple (valeur, position), le modele est agnostique au
+    montage : rien n'est cable pour 64 ou 19 electrodes en particulier.
+
+    Le decodeur est celui du bras dense (MLP latent -> n_ch), volontairement :
+    on ne veut pas confondre l'effet de l'encodeur avec celui du decodeur.
+    """
+
+    def __init__(self, cfg: VAEConfig):
+        super().__init__(cfg)
+        pos = torch.as_tensor(np.asarray(cfg.elec_pos, dtype=np.float32))
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("cfg.elec_pos doit etre de forme (n_ch, 3)")
+        n_ch, d = pos.shape[0], cfg.d_model
+
+        # distances normalisees par la mediane : gamma devient sans dimension,
+        # donc comparable entre montages et entre jeux de donnees
+        dist = torch.cdist(pos[None], pos[None])[0]
+        scale = dist[dist > 0].median().clamp_min(1e-6)
+        self.register_buffer("dist", dist / scale)
+        self.register_buffer("pos", pos / scale)
+
+        self.value_emb = nn.Linear(1, d)
+        self.pos_emb = nn.Sequential(nn.Linear(3, d), nn.SiLU(), nn.Linear(d, d))
+        self.blocks = nn.ModuleList([_TokenBlock(d, cfg.n_heads)
+                                     for _ in range(cfg.n_layers)])
+        self.norm = nn.LayerNorm(d)
+        self.fc_mu = nn.Linear(d, cfg.latent_dim)
+        self.fc_logvar = nn.Linear(d, cfg.latent_dim)
+
+        h, nh = cfg.hidden_width, cfg.n_hidden
+        layers, prev = [], cfg.latent_dim
+        for _ in range(nh):
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.SiLU()]
+            prev = h
+        layers += [nn.Linear(prev, n_ch)]
+        self.dec = nn.Sequential(*layers)
+
+    def encode(self, x):
+        # x : (B, n_ch) -> tokens (B, n_ch, d)
+        h = self.value_emb(x.unsqueeze(-1)) + self.pos_emb(self.pos).unsqueeze(0)
+        for blk in self.blocks:
+            h = blk(h, self.dist)
+        # moyenne sur les tokens : invariante par permutation, donc l'ordre
+        # des electrodes ne peut pas devenir une variable cachee
+        h = self.norm(h).mean(dim=1)
+        return self.fc_mu(h), self.fc_logvar(h).clamp(-10, 10)
+
+    def decode(self, z):
+        return self.dec(z)
+
+    @torch.no_grad()
+    def learned_locality(self) -> np.ndarray:
+        """softplus(gamma) par tete et par couche : la localite effectivement
+        apprise. C'est la quantite a rapporter pour trancher H9."""
+        return np.array([[float(v) for v in
+                          nn.functional.softplus(blk.att.gamma).cpu().numpy()]
+                         for blk in self.blocks])
+
+
 def build_model(cfg: VAEConfig) -> BaseVAE:
-    return ConvVAE(cfg) if cfg.kind == "conv" else DenseVAE(cfg)
+    if cfg.kind == "conv":
+        return ConvVAE(cfg)
+    if cfg.kind == "token":
+        return TokenVAE(cfg)
+    return DenseVAE(cfg)
 
 
 def match_dense_to_conv(conv_cfg: VAEConfig, n_channels_eeg: int,
@@ -202,6 +339,31 @@ def match_dense_to_conv(conv_cfg: VAEConfig, n_channels_eeg: int,
             lo = mid + 1
         else:
             hi = mid - 1
+    return best
+
+
+def match_token_to_conv(conv_cfg: VAEConfig, n_channels_eeg: int, elec_pos,
+                        n_heads: int = 4, n_layers: int = 2, n_hidden: int = 2,
+                        hidden_width: int = 256) -> VAEConfig:
+    """Choisit `d_model` pour que le VAE token ait ~autant de parametres que le
+    VAE conv de reference (meme exigence d'equite que `match_dense_to_conv`).
+
+    `d_model` est contraint a un multiple de `n_heads`, donc on balaie la
+    grille au lieu de dichotomiser : elle est courte.
+    """
+    target = ConvVAE(conv_cfg).n_params()
+    best, best_gap = None, None
+    for d in range(n_heads, 16 * n_heads + 1, n_heads):
+        cfg = VAEConfig(kind="token", latent_dim=conv_cfg.latent_dim,
+                        image_size=conv_cfg.image_size,
+                        n_channels_eeg=n_channels_eeg, d_model=d,
+                        n_heads=n_heads, n_layers=n_layers,
+                        hidden_width=hidden_width, n_hidden=n_hidden,
+                        beta=conv_cfg.beta, lambda_pol=conv_cfg.lambda_pol,
+                        elec_pos=elec_pos)
+        gap = abs(TokenVAE(cfg).n_params() - target)
+        if best_gap is None or gap < best_gap:
+            best, best_gap = cfg, gap
     return best
 
 
