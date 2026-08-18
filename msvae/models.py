@@ -15,6 +15,7 @@ meme endroit.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, asdict
 
 import numpy as np
@@ -39,6 +40,11 @@ class VAEConfig:
     n_heads: int = 4            # token : nombre de tetes d'attention
     n_layers: int = 2           # token : nombre de blocs d'attention
     elec_pos: tuple = ()        # token : positions 3D des electrodes (n_ch, 3)
+    gamma_init: float = 0.693   # token : valeur INITIALE de softplus(gamma),
+    # c'est-a-dire de la localite. 0.693 = softplus(0). A faire varier pour
+    # verifier que gamma est identifie : si des initialisations eloignees ne
+    # convergent pas vers la meme valeur, gamma n'est pas appris et sa lecture
+    # ne mesure rien (voir H11).
     beta: float = 1e-3          # poids de la KL
     lambda_pol: float = 1.0     # poids de la consistance latente
     loss_space: str = "image"   # conv : 'image' | 'topo'
@@ -199,16 +205,17 @@ class _DistanceBiasedAttention(nn.Module):
     donnait qu'une conclusion par defaut.
     """
 
-    def __init__(self, d_model: int, n_heads: int):
+    def __init__(self, d_model: int, n_heads: int, gamma_init: float = 0.693):
         super().__init__()
         if d_model % n_heads:
             raise ValueError("d_model doit etre divisible par n_heads")
         self.h, self.dh = n_heads, d_model // n_heads
         self.qkv = nn.Linear(d_model, 3 * d_model)
         self.proj = nn.Linear(d_model, d_model)
-        # initialise a softplus(0) = 0.69 : un biais local modere, que
-        # l'entrainement peut annuler ou renforcer librement
-        self.gamma = nn.Parameter(torch.zeros(n_heads))
+        # `gamma_init` est la valeur voulue de softplus(gamma), donc de la
+        # localite de depart ; on inverse le softplus pour la poser.
+        g0 = math.log(math.expm1(max(float(gamma_init), 1e-6)))
+        self.gamma = nn.Parameter(torch.full((n_heads,), g0))
 
     def forward(self, h, dist):
         b, n, d = h.shape
@@ -224,10 +231,11 @@ class _DistanceBiasedAttention(nn.Module):
 class _TokenBlock(nn.Module):
     """Bloc pre-norm : attention biaisee par la distance, puis MLP."""
 
-    def __init__(self, d_model: int, n_heads: int, mlp_ratio: int = 2):
+    def __init__(self, d_model: int, n_heads: int, mlp_ratio: int = 2,
+                 gamma_init: float = 0.693):
         super().__init__()
         self.n1 = nn.LayerNorm(d_model)
-        self.att = _DistanceBiasedAttention(d_model, n_heads)
+        self.att = _DistanceBiasedAttention(d_model, n_heads, gamma_init)
         self.n2 = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(nn.Linear(d_model, mlp_ratio * d_model), nn.SiLU(),
                                  nn.Linear(mlp_ratio * d_model, d_model))
@@ -272,7 +280,8 @@ class TokenVAE(BaseVAE):
 
         self.value_emb = nn.Linear(1, d)
         self.pos_emb = nn.Sequential(nn.Linear(3, d), nn.SiLU(), nn.Linear(d, d))
-        self.blocks = nn.ModuleList([_TokenBlock(d, cfg.n_heads)
+        self.blocks = nn.ModuleList([_TokenBlock(d, cfg.n_heads,
+                                                 gamma_init=cfg.gamma_init)
                                      for _ in range(cfg.n_layers)])
         self.norm = nn.LayerNorm(d)
         self.fc_mu = nn.Linear(d, cfg.latent_dim)

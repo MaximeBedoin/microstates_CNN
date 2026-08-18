@@ -131,3 +131,27 @@ def test_epoch_selection_by_downstream_score():
     assert abs(res.best_val + 0.90) < 1e-9
     scored = [h for h in res.history if "down_score" in h]
     assert [h["epoch"] for h in scored] == [0, 2, 4, 6, 7]
+
+
+def test_gamma_init_pose_la_localite_voulue():
+    """`gamma_init` est la valeur voulue de softplus(gamma), pas celle de gamma.
+
+    C'est ce qui rend le test d'identifiabilite lisible : on initialise en
+    unites de localite, et `learned_locality()` se lit dans les memes unites.
+    """
+    import numpy as np
+    from dataclasses import replace
+
+    from msvae.models import VAEConfig, build_model
+
+    rng = np.random.default_rng(0)
+    pos = rng.normal(size=(16, 3))
+    pos /= np.linalg.norm(pos, axis=1, keepdims=True)
+    base = VAEConfig(kind="token", latent_dim=4, n_channels_eeg=16, d_model=8,
+                     n_heads=2, n_layers=2, elec_pos=tuple(map(tuple, pos)))
+
+    for target in (0.05, 0.693, 3.0):
+        m = build_model(replace(base, gamma_init=target))
+        loc = m.learned_locality()
+        assert loc.shape == (2, 2)
+        assert np.allclose(loc, target, atol=1e-4), (target, loc)
