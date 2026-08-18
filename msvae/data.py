@@ -275,7 +275,10 @@ def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
 
     mne.set_log_level("error")
     root = Path(root)
-    cache = cache or SubjectCache(tag="ds004504")
+    # tag distinct du repertoire de telechargement : `cache/ds004504` contient
+    # le jeu BIDS, les .npz pretraites vont dans `cache/ds004504_prep`. Les
+    # melanger polluait l'arborescence BIDS et cassait sa validation.
+    cache = cache or SubjectCache(tag="ds004504_prep")
     meta = read_participants(root)
     keep = [s for s, m in sorted(meta.items()) if m["group"] in groups]
     if max_subjects:

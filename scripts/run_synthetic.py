@@ -36,17 +36,40 @@ def main():
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="results/synthetic")
+    p.add_argument("--no-token", action="store_true",
+                   help="desactive le bras attention sur electrodes")
+    # amplitude de l'effet de groupe. `--effect transition --effect-t 0.35`
+    # place la cohorte dans la zone informative de la courbe de sensibilite :
+    # ni au hasard, ni saturee, donc la seule ou les methodes se departagent.
+    p.add_argument("--effect", choices=["reference", "duration", "transition"],
+                   default="reference",
+                   help="'transition' = durees appariees, le bras spectral n'a "
+                        "aucune prise ; 'duration' = controle")
+    p.add_argument("--effect-t", type=float, default=1.0,
+                   help="amplitude dans [0, 1] ; 1.0 = effet de la cohorte de "
+                        "reference, 0.0 = aucun effet")
     a = p.parse_args()
+
+    # 1.0 = amplitude de la cohorte de reference (85 -> 65 ms, C->D x2.5)
+    eff = dict(mean_dur_g1=0.085, mean_dur_g2=0.065, trans_boost=2.5)
+    if a.effect == "duration":
+        eff = dict(mean_dur_g1=0.085, mean_dur_g2=0.085 - a.effect_t * 0.020,
+                   trans_boost=1.0)
+    elif a.effect == "transition":
+        eff = dict(mean_dur_g1=0.085, mean_dur_g2=0.085,
+                   trans_boost=1.0 + a.effect_t * 1.5)
+    if a.effect != "reference":
+        print(f"effet de groupe « {a.effect} » a t={a.effect_t} : {eff}")
 
     cfg = ExperimentConfig(
         name="synthetic", dataset="synthetic", n_subjects=a.n_subjects,
         duration=a.duration, snr=a.snr, k=a.k, epochs=a.epochs,
         latent_dim=a.latent_dim, image_size=a.image_size,
         arch_search=not a.no_arch_search, run_pycrostates=not a.no_pycrostates,
+        run_token=not a.no_token,
         stability_refit=a.stability_refit, stability_repeats=a.stability_repeats,
         loss_space=a.loss_space, select_epoch_by_score=a.select_epoch_by_score,
-        grid=a.grid,
-        seed=a.seed, out_dir=a.out)
+        grid=a.grid, seed=a.seed, out_dir=a.out, **eff)
     tcfg = TrainConfig(epochs=a.epochs, seed=a.seed, num_threads=a.threads,
                        device=a.device, batch_size=a.batch_size)
     print(f"peripherique : {resolve_device(tcfg.device)}  "

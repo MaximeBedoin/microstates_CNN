@@ -33,6 +33,13 @@ class ExperimentConfig:
     duration: float = 60.0          # synthetique uniquement
     snr: float = 1.0                # synthetique uniquement
     n_states_true: int = 4          # synthetique uniquement
+    # amplitude des deux composantes de l'effet de groupe (synthetique). Voir
+    # synthetic.simulate_dataset : un effet de DUREE se lit dans le spectre et
+    # ne demontre donc rien sur l'apport des microstates ; seul un effet de
+    # TRANSITION a durees appariees le fait. Defauts = cohorte de reference.
+    mean_dur_g1: float = 0.085
+    mean_dur_g2: float = 0.065
+    trans_boost: float = 2.5
     k: int = 4                      # K du clustering
     latent_dim: int = 8
     image_size: int = 32
@@ -90,7 +97,9 @@ def load_records(cfg: ExperimentConfig):
     if cfg.dataset == "synthetic":
         recs, gt = iter_synthetic(n_subjects=cfg.n_subjects, duration=cfg.duration,
                                   snr=cfg.snr, n_states=cfg.n_states_true,
-                                  seed=cfg.seed)
+                                  seed=cfg.seed, mean_dur_g1=cfg.mean_dur_g1,
+                                  mean_dur_g2=cfg.mean_dur_g2,
+                                  trans_boost=cfg.trans_boost)
         for r in recs:
             r.extra["montage"] = "biosemi64"
         return recs, gt
