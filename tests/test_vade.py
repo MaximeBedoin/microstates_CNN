@@ -136,3 +136,29 @@ def test_elbo_ignore_le_terme_dequilibrage():
     xb = torch.as_tensor(x)
     attendu, _ = vade.vade_loss(m, xb, lambda_balance=0.0)
     assert abs(vade.elbo(m, x) - float(attendu)) < 1e-4
+
+
+def test_component_maps_empirique_vs_mu_c():
+    """Avec `x`, on decode la moyenne empirique des points assignes ; sans `x`,
+    les moyennes libres du melange. Les deux doivent differer des que mu_c a
+    derive de la variete — c'est precisement le cas qu'on veut eviter."""
+    m = _model(k=3, n_ch=32)
+    x = np.random.default_rng(4).normal(size=(200, 32)).astype(np.float32)
+    with torch.no_grad():                       # eloigne mu_c des donnees
+        m.prior.mu_c.add_(5.0)
+
+    libre = vade.component_maps(m, use_empirical=False)
+    empirique = vade.component_maps(m, x)
+    assert libre.shape == empirique.shape == (3, 32)
+    assert not np.allclose(libre, empirique)
+    # dans les deux cas les cartes restent normalisees
+    for mp in (libre, empirique):
+        assert np.allclose(mp.mean(axis=1), 0, atol=1e-5)
+        assert np.allclose(np.linalg.norm(mp, axis=1), 1.0, atol=1e-5)
+
+
+def test_component_maps_sans_x_reste_sur_mu_c():
+    m = _model(k=3, n_ch=32)
+    a = vade.component_maps(m)
+    b = vade.component_maps(m, use_empirical=False)
+    assert np.allclose(a, b)

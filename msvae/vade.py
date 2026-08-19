@@ -198,16 +198,37 @@ def assign(model, x: np.ndarray, batch_size: int = 4096) -> np.ndarray:
 
 
 @torch.no_grad()
-def component_maps(model, n_ch: int | None = None) -> np.ndarray:
-    """Topographies des composantes : decodage des moyennes mu_c.
+def component_maps(model, x: np.ndarray | None = None,
+                   use_empirical: bool = True) -> np.ndarray:
+    """Topographies des composantes.
 
-    Cartes re-referencees en moyenne et normalisees, comme partout ailleurs.
-    Pour un encodeur conv la sortie est une image : c'est a l'appelant de la
-    ramener aux electrodes (`projector.to_topo`), exactement comme pour les
-    centroides k-means.
+    `x` fourni et `use_empirical` (defaut) : on decode la moyenne EMPIRIQUE des
+    points assignes a chaque composante. Sinon on decode `mu_c`.
+
+    La distinction n'est pas cosmetique. `mu_c` est un parametre libre du
+    melange, optimise conjointement, que rien ne contraint a rester sur la
+    variete des points encodes — mesure sur la cohorte t=0.35 : la derive vaut
+    45 a 80 % de la norme du vecteur. Le decodeur n'a jamais vu de tels points,
+    et les cartes obtenues se degradent sans qu'aucune erreur ne soit levee
+    (|r| au ground truth : 0.770 pour mu_c contre 0.881 pour la moyenne
+    empirique). C'est le mecanisme de H1bis transpose au latent.
+
+    C'est aussi la seule version COMPARABLE aux autres bras, qui decodent des
+    centroides de k-means, c'est-a-dire des moyennes empiriques.
+
+    Cartes re-referencees en moyenne et normalisees. Pour un encodeur conv la
+    sortie est une image : a l'appelant de la ramener aux electrodes.
     """
     model.eval()
-    maps = model.decode_numpy(model.prior.mu_c.detach().cpu().numpy())
+    if x is not None and use_empirical:
+        z = model.encode_numpy(np.asarray(x, dtype=np.float32))
+        lab = assign(model, x)
+        mu = model.prior.mu_c.detach().cpu().numpy()
+        centers = np.stack([z[lab == c].mean(0) if (lab == c).any() else mu[c]
+                            for c in range(model.prior.k)])
+    else:
+        centers = model.prior.mu_c.detach().cpu().numpy()
+    maps = model.decode_numpy(centers.astype(np.float32))
     if maps.ndim > 2:
         return maps
     maps = maps - maps.mean(axis=1, keepdims=True)

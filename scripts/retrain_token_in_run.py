@@ -78,6 +78,20 @@ def main():
     print(f"  localite finale softplus(gamma) : "
           f"{r.model.learned_locality().mean():.3f}")
 
+    # results.json porte les metriques du bras token d'origine : les laisser
+    # telles quelles apres avoir remplace ses cartes produirait un fichier
+    # incoherent, ou la reconstruction du plateau (0.71) cotoie des cartes
+    # issues d'un modele entraine.
+    res["models"]["token"] = dict(
+        cfg={k: v for k, v in tcfg_model.to_dict().items() if k != "elec_pos"},
+        n_params=r.model.n_params(), best_val=float(r.best_val),
+        seconds=float(r.seconds), final=r.history[-1],
+        learned_locality=r.model.learned_locality().tolist(),
+        retrained=dict(lr=a.lr, epochs=a.epochs,
+                       recon_best=float(min(rec)),
+                       best_epoch=int(np.argmin(rec))))
+    (run / "results.json").write_text(json.dumps(res, indent=2))
+
     npz = dict(np.load(run / "maps.npz"))
     for mode in ("two_stage", "weighted"):
         m = cluster.decoded_maps_from_bank(r.model, bank, cfg.k, mode=mode,

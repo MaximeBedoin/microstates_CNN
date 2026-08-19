@@ -121,7 +121,7 @@ def run_cell(a) -> dict:
                                  lr=1e-3, lambda_balance=a.vade_lambda_balance,
                                  batch_size=a.batch_size, seed=a.seed,
                                  verbose=False)
-        maps["vade_dense"] = vade.component_maps(vm)
+        maps["vade_dense"] = vade.component_maps(vm, full_bal.topo)
         import torch as _t
         w = _t.softmax(vm.prior.pi_logits.detach(), 0).cpu().numpy()
         extra["vade"] = dict(val_elbo=hist[-1].get("val_elbo"),

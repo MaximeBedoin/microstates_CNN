@@ -63,6 +63,11 @@ class ExperimentConfig:
     token_layers: int = 2
     token_lr: float = 5e-4          # cf. fit_models : 2e-3 fait plateauer le
     token_patience: int = 10 ** 6   # bras token pendant ~30 epoques
+    token_epochs: int = 0           # 0 = max(epochs, 200). Le bras token
+    # converge BEAUCOUP plus lentement que les autres : optimum a l'epoque 76
+    # sur 64 canaux, 261 sur les 19 canaux de ds004504. Lui donner les epochs
+    # des autres bras (40, voire 30) le laisse sous-appris — c'est exactement
+    # la panne qui a produit un premier verdict faux ou il finissait dernier.
     # VaDE : prior en melange de gaussiennes. `vade_kind` designe le bras dont
     # l'encodeur sert de point de depart — le contraste entre ce bras et le
     # bras VaDE isole alors l'effet du PRIOR, et rien d'autre.
@@ -275,6 +280,8 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
                          score_fn=final_score_fn, readout=readout)
     res_dense = train_vae(dense_cfg, full_bal.topo, val_bal.topo, None, ftcfg,
                           score_fn=final_score_fn)
+    _warn_if_not_converged("conv", res_conv)
+    _warn_if_not_converged("dense", res_dense)
 
     # bras token : attention sur les electrodes, sans image. Meme entree que le
     # bras dense (vecteurs de capteurs) et meme decodeur, donc l'ablation porte
@@ -294,13 +301,15 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
         # produit le premier verdict, faux, ou il finissait dernier partout.
         # A lr=5e-4 le plateau disparait entierement (0.754 -> 0.153 en 10
         # epoques). On lui donne donc son propre lr et pas d'early stopping.
+        n_ep = cfg.token_epochs or max(cfg.epochs, 200)
         ttcfg = TrainConfig(**{**ftcfg.__dict__, "lr": cfg.token_lr,
-                               "patience": cfg.token_patience})
+                               "patience": cfg.token_patience, "epochs": n_ep})
         print(f"  bras token : d_model={token_cfg.d_model}, "
               f"{cfg.token_layers} couches, {cfg.token_heads} tetes, "
-              f"lr={cfg.token_lr:g} (regime propre, voir commentaire)")
+              f"lr={cfg.token_lr:g}, {n_ep} epoques (regime propre)")
         res_token = train_vae(token_cfg, full_bal.topo, val_bal.topo, None, ttcfg,
                               score_fn=final_score_fn)
+        _warn_if_not_converged("token", res_token)
 
     (out / "figures").mkdir(parents=True, exist_ok=True)
     plotting.plot_training(res_conv.history, out / "figures" / "training_conv.png")
@@ -341,6 +350,28 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
                 vade=vade_model, vade_history=vade_hist,
                 search=search, train_bank=train_bank, val_bank=val_bank,
                 full_bal=full_bal)
+
+
+def _warn_if_not_converged(name: str, res, tail_frac: float = 0.1) -> bool:
+    """Signale un bras dont la reconstruction descendait encore a l'arret.
+
+    Un optimum situe dans les dernieres epoques veut dire qu'on a coupe un
+    entrainement en cours, et les metriques aval qui en decoulent mesurent
+    alors un modele sous-appris. C'est passe inapercu deux fois sur le bras
+    token — une premiere fois bloque sur son plateau, une seconde fois arrete
+    a l'epoque 79 sur 80 alors qu'il progressait encore.
+    """
+    rec = [h.get("val_recon") for h in res.history if h.get("val_recon") is not None]
+    if len(rec) < 5:
+        return False
+    best = int(np.argmin(rec))
+    if best >= len(rec) - max(2, int(tail_frac * len(rec))):
+        print(f"  ATTENTION [{name}] : optimum a l'epoque {best}/{len(rec) - 1}, "
+              f"la reconstruction descendait encore. Modele probablement "
+              f"sous-appris — augmenter les epoques avant d'interpreter.",
+              flush=True)
+        return True
+    return False
 
 
 def _electrode_positions(record, n_ch: int) -> tuple:
@@ -478,7 +509,9 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
         # Cartes VaDE = decodage des moyennes des composantes. Aucun k-means
         # aval : c'est une LECTURE du modele, la ou les autres bras posent un
         # clustering par-dessus un latent qui ne le prevoyait pas.
-        vm = vade.component_maps(fit["vade"])
+        vm = vade.component_maps(
+            fit["vade"],
+            full_bal.images if cfg.vade_kind == "conv" else full_bal.topo)
         if vm.ndim > 2:                       # encodeur conv : sortie image
             vm = bank.projector.to_topo(vm[:, 0] * bank.image_scale,
                                         method="ridge")

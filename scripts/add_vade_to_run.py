@@ -77,7 +77,7 @@ def main():
                                 lr=a.lr, lambda_balance=a.lambda_balance,
                                 batch_size=a.batch_size, mask=mask, seed=cfg.seed)
 
-    maps = vade.component_maps(model)
+    maps = vade.component_maps(model, x)
     if maps.ndim > 2:
         maps = bank.projector.to_topo(maps[:, 0] * bank.image_scale, method="ridge")
         maps = maps - maps.mean(axis=1, keepdims=True)
