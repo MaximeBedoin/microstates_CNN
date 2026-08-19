@@ -39,7 +39,7 @@ from msvae import cluster  # noqa: E402
 from msvae.models import (VAEConfig, match_dense_to_conv,  # noqa: E402
                           match_token_to_conv)
 from msvae.pipeline import (ExperimentConfig, _electrode_positions,  # noqa: E402
-                            build_bank, load_records)
+                            build_bank, load_records, make_downstream_score)
 from msvae.train import TrainConfig, train_vae  # noqa: E402
 
 
@@ -69,6 +69,14 @@ def main():
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--force", action="store_true",
                    help="recalcule meme si le bras est deja converge")
+    p.add_argument("--score-every", type=int, default=0,
+                   help="evalue la GEV aval toutes les N epoques. Donne la "
+                        "courbe de H2 a budget egal : on voit la qualite aval "
+                        "pendant que la reconstruction continue de baisser. "
+                        "Enregistrement SEUL — la selection reste sur la loss, "
+                        "selectionner sur la GEV serait selectionner sur une "
+                        "metrique dont on a montre qu elle classe la verite "
+                        "quatrieme (P6)")
     a = p.parse_args()
 
     run = Path(a.run)
@@ -107,11 +115,17 @@ def main():
     readout = (bank.projector.readout_matrix()
                if is_conv and cfg.loss_space == "topo" else None)
 
+    score_fn = None
+    if a.score_every:
+        val_records = [r_ for r_ in records if r_.subject in set(val_bank.subjects)]
+        score_fn = make_downstream_score(val_bal, val_records, cfg.k,
+                                         cfg.min_segment_ms, cfg.seed)
     r = train_vae(mcfg, x, xv, mask,
                   TrainConfig(epochs=a.epochs, seed=cfg.seed, device="auto",
                               batch_size=a.batch_size, verbose=False,
-                              patience=10 ** 6, lr=lr),
-                  readout=readout)
+                              patience=10 ** 6, lr=lr,
+                              score_every=a.score_every),
+                  score_fn=score_fn, readout=readout)
     rec = [h["val_recon"] for h in r.history]
     best = int(np.argmin(rec))
     print(f"  reconstruction : {rec[0]:.4f} -> {min(rec):.4f} (epoque {best})")
@@ -123,10 +137,15 @@ def main():
         print(f"  convergence atteinte ({len(rec) - 1 - best} epoques sans "
               f"amelioration ensuite)")
 
+    # relecture JUSTE avant l'ecriture : entre le debut du script et ici il
+    # s'est ecoule des dizaines de minutes, pendant lesquelles un autre bras a
+    # pu ecrire. Repartir de la version chargee au demarrage effacerait son
+    # travail.
+    new_maps = {f"vae_{a.arm}_{mode}": cluster.decoded_maps_from_bank(
+        r.model, bank, cfg.k, mode=mode, seed=cfg.seed, kind=a.arm)[0]
+        for mode in ("two_stage", "weighted")}
     npz = dict(np.load(run / "maps.npz"))
-    for mode in ("two_stage", "weighted"):
-        npz[f"vae_{a.arm}_{mode}"] = cluster.decoded_maps_from_bank(
-            r.model, bank, cfg.k, mode=mode, seed=cfg.seed, kind=a.arm)[0]
+    npz.update(new_maps)
     np.savez_compressed(run / "maps.npz", **npz)
     torch.save(dict(state=r.model.state_dict(), cfg=mcfg.to_dict()),
                run / f"model_{a.arm}.pt")
@@ -137,10 +156,20 @@ def main():
                  retrained=dict(lr=lr, epochs=a.epochs, recon_best=float(min(rec)),
                                 best_epoch=best, converged=bool(
                                     best < len(rec) - max(2, len(rec) // 10))))
+    curve = [(h["epoch"], -h["down_score"]) for h in r.history if "down_score" in h]
+    if curve:
+        entry["downstream_curve"] = [[int(e), float(g)] for e, g in curve]
+        best_g = max(curve, key=lambda t_: t_[1])
+        print(f"  GEV aval : {curve[0][1]:.4f} (ep {curve[0][0]}) -> "
+              f"{curve[-1][1]:.4f} (ep {curve[-1][0]}), "
+              f"max {best_g[1]:.4f} a l'epoque {best_g[0]}")
     if a.arm == "token":
         entry["learned_locality"] = r.model.learned_locality().tolist()
+    res = json.loads((run / "results.json").read_text())   # idem : on relit
     res["models"][a.arm] = entry
     (run / "results.json").write_text(json.dumps(res, indent=2))
+    # sidecar par bras : survit meme si results.json est ecrase par un autre
+    (run / f"retrain_{a.arm}.json").write_text(json.dumps(entry, indent=2))
     print(f"ok -> vae_{a.arm}_* remplaces dans {run}/maps.npz")
 
 
