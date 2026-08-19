@@ -163,7 +163,7 @@ def iter_synthetic(n_subjects: int = 20, duration: float = 60.0, snr: float = 1.
                    cache: SubjectCache | None = None, l_freq: float = 1.0,
                    h_freq: float = 40.0, verbose: bool = True,
                    mean_dur_g1: float = 0.085, mean_dur_g2: float = 0.065,
-                   trans_boost: float = 2.5):
+                   trans_boost: float = 2.5, montage: str = "biosemi64"):
     """Genere les SubjectRecord de la cohorte synthetique (+ ground truth).
 
     `mean_dur_g2` / `trans_boost` : amplitude des deux composantes de l'effet
@@ -178,13 +178,15 @@ def iter_synthetic(n_subjects: int = 20, duration: float = 60.0, snr: float = 1.
 
     mne.set_log_level("error")
     tag = (f"synth_n{n_subjects}_d{int(duration)}_snr{snr}_k{n_states}_s{seed}"
-           f"_d1{mean_dur_g1:g}_d2{mean_dur_g2:g}_tb{trans_boost:g}")
+           f"_d1{mean_dur_g1:g}_d2{mean_dur_g2:g}_tb{trans_boost:g}"
+           f"_{montage}")
     cache = cache or SubjectCache(tag=tag)
     subs, group_maps = simulate_dataset(n_subjects=n_subjects, duration=duration,
                                         n_states=n_states, sfreq=sfreq, snr=snr,
                                         seed=seed, mean_dur_g1=mean_dur_g1,
                                         mean_dur_g2=mean_dur_g2,
-                                        trans_boost=trans_boost)
+                                        trans_boost=trans_boost,
+                                        montage=montage)
     np.save(cache.root / "ground_truth_maps.npy", group_maps)
     out = []
     for s in subs:

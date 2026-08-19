@@ -29,12 +29,35 @@ import numpy as np
 
 DEFAULT_MONTAGE = "biosemi64"
 
+# Les 19 electrodes cliniques de ds004504. `standard_1020` de MNE en contient
+# 94 — c'est le 10-20 ETENDU, pas le montage clinique. Simuler sur ces 19
+# positions reproduit les conditions du jeu reel : le rendu image y devient
+# interpole a plus de 90 %, et l'ablation conv/dense/token s'y mesure dans la
+# situation ou elle sera reellement utilisee.
+DS004504_CHANNELS = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", "O1",
+                     "O2", "F7", "F8", "T7", "T8", "P7", "P8", "Fz", "Cz", "Pz"]
+MONTAGE_PRESETS = {"ds004504_19": ("standard_1020", DS004504_CHANNELS)}
+
 
 # --------------------------------------------------------------------- modele
 def make_info(montage: str = DEFAULT_MONTAGE, sfreq: float = 250.0):
+    """Info MNE du montage simule.
+
+    `montage` accepte un nom de montage standard, ou une cle de
+    MONTAGE_PRESETS qui restreint un montage a une liste d'electrodes.
+    """
     import mne
 
+    picks = None
+    if montage in MONTAGE_PRESETS:
+        montage, picks = MONTAGE_PRESETS[montage]
     names = mne.channels.make_standard_montage(montage).ch_names
+    if picks is not None:
+        manquants = [c for c in picks if c not in names]
+        if manquants:
+            raise ValueError(f"electrodes absentes du montage {montage} : "
+                             f"{manquants}")
+        names = list(picks)
     info = mne.create_info(names, sfreq, "eeg")
     info.set_montage(montage)
     return info

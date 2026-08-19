@@ -40,6 +40,12 @@ class ExperimentConfig:
     mean_dur_g1: float = 0.085
     mean_dur_g2: float = 0.065
     trans_boost: float = 2.5
+    # Montage simule. `standard_1020` (19 electrodes) reproduit les
+    # conditions de ds004504 : le rendu image y devient interpole a plus de
+    # 90 %, exactement la situation du jeu clinique. Regler des
+    # hyperparametres sur du 64 canaux puis les appliquer a du 19 n'aurait
+    # pas de raison de transferer.
+    montage: str = "biosemi64"
     k: int = 4                      # K du clustering
     latent_dim: int = 8
     image_size: int = 32
@@ -97,9 +103,19 @@ class ExperimentState:
 
 # ----------------------------------------------------------------- helpers
 def info_from_record(rec, montage: str | None = None):
+    """Info MNE d'un enregistrement.
+
+    Resout les cles de `synthetic.MONTAGE_PRESETS` (par exemple
+    `ds004504_19`, qui restreint le 10-20 aux 19 electrodes cliniques) : sans
+    cela `make_standard_montage` reçoit un nom qu'il ne connait pas.
+    """
     import mne
 
+    from .synthetic import MONTAGE_PRESETS
+
     montage = montage or rec.extra.get("montage", "standard_1005")
+    if montage in MONTAGE_PRESETS:
+        montage = MONTAGE_PRESETS[montage][0]
     info = mne.create_info(list(rec.ch_names), rec.sfreq, "eeg")
     info.set_montage(mne.channels.make_standard_montage(montage),
                      on_missing="ignore", verbose="error")
@@ -115,9 +131,10 @@ def load_records(cfg: ExperimentConfig):
                                   snr=cfg.snr, n_states=cfg.n_states_true,
                                   seed=cfg.seed, mean_dur_g1=cfg.mean_dur_g1,
                                   mean_dur_g2=cfg.mean_dur_g2,
-                                  trans_boost=cfg.trans_boost)
+                                  trans_boost=cfg.trans_boost,
+                                  montage=cfg.montage)
         for r in recs:
-            r.extra["montage"] = "biosemi64"
+            r.extra["montage"] = cfg.montage
         return recs, gt
     if cfg.dataset == "ds004504":
         recs = list(iter_ds004504(groups=tuple(cfg.ds_groups),
