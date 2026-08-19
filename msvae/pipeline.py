@@ -509,9 +509,11 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
         # Cartes VaDE = decodage des moyennes des composantes. Aucun k-means
         # aval : c'est une LECTURE du modele, la ou les autres bras posent un
         # clustering par-dessus un latent qui ne le prevoyait pas.
+        # `full_bal` est local a fit_models ; il est reexporte dans `fit`
+        vbal = fit["full_bal"]
         vm = vade.component_maps(
             fit["vade"],
-            full_bal.images if cfg.vade_kind == "conv" else full_bal.topo)
+            vbal.images if cfg.vade_kind == "conv" else vbal.topo)
         if vm.ndim > 2:                       # encodeur conv : sortie image
             vm = bank.projector.to_topo(vm[:, 0] * bank.image_scale,
                                         method="ridge")

@@ -22,6 +22,9 @@ def main():
     p.add_argument("--image-size", type=int, default=32)
     p.add_argument("--no-arch-search", action="store_true")
     p.add_argument("--no-pycrostates", action="store_true")
+    p.add_argument("--n-per-subject", type=int, default=None,
+                   help="plafonne le nombre de pics par sujet (levier de cout ; "
+                        "expose par les autres lanceurs, il manquait ici)")
     p.add_argument("--stability-refit", action="store_true")
     p.add_argument("--stability-repeats", type=int, default=10)
     p.add_argument("--loss-space", choices=["image", "topo"], default="image",
@@ -74,6 +77,7 @@ def main():
         run_token=not a.no_token, run_vade=a.vade, vade_kind=a.vade_kind,
         vade_epochs=a.vade_epochs,
         stability_refit=a.stability_refit, stability_repeats=a.stability_repeats,
+        n_per_subject=a.n_per_subject,
         loss_space=a.loss_space, select_epoch_by_score=a.select_epoch_by_score,
         grid=a.grid, seed=a.seed, out_dir=a.out, **eff)
     tcfg = TrainConfig(epochs=a.epochs, seed=a.seed, num_threads=a.threads,
