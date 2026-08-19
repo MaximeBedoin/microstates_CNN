@@ -139,6 +139,18 @@ def _make_estimator(seed: int = 0):
     L'imputation par la mediane est DANS le pipeline, donc ajustee sur le seul
     pli d'entrainement : `mean_duration_ms` vaut NaN si une classe n'a aucun
     segment non tronque.
+
+    LIMITE CONNUE, sans effet sur les jeux de donnees utilises jusqu'ici. La
+    validation croisee INTERNE de `LogisticRegressionCV` ignore les groupes :
+    elle ne sait pas qu'un sujet peut apparaitre plusieurs fois. Le decoupage
+    externe, lui, est groupe par sujet (`_cv_splits`). Sur un protocole APPARIE
+    — un sujet fournissant deux conditions, comme yeux ouverts / yeux fermes —
+    les deux lignes d'un meme sujet peuvent donc se retrouver de part et
+    d'autre du pli interne, ce qui biaise optimistement le choix de C, sans
+    toutefois contaminer l'estimation hors-pli externe. `synthetic` et
+    `ds004504` n'ont qu'une ligne par sujet et ne sont pas concernes ; pour
+    EEGBCI il faudrait remplacer LogisticRegressionCV par un GridSearchCV avec
+    GroupKFold, sklearn ne propageant pas les groupes au CV interne.
     """
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import LogisticRegressionCV

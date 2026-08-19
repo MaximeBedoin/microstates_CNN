@@ -262,7 +262,24 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
 
     dense_cfg = match_dense_to_conv(best_cfg, n_ch)
 
-    # entrainement final : tous les sujets, equilibres
+    # Entrainement final : TOUS les sujets, equilibres.
+    #
+    # ATTENTION, consequence a ne pas perdre de vue. `val_bal` est tire de
+    # `val_bank`, dont les sujets sont INCLUS dans `full_bal` : le jeu dit de
+    # validation est donc un SOUS-ENSEMBLE du jeu d'entrainement a ce stade.
+    # Trois consequences :
+    #   * `best_val` rapporte dans results.json n'est pas une estimation
+    #     hors-echantillon ;
+    #   * l'early stopping sur `val_loss` ne peut pas detecter de
+    #     sur-apprentissage, puisqu'il regarde des donnees vues ;
+    #   * `--select-epoch-by-score` evalue la GEV aval sur des sujets que le
+    #     modele a vus, ce qui affaiblit le correctif de H2.
+    # La recherche d'architecture, elle, est propre : elle utilise `train_bal`
+    # (ligne ~251), disjoint de `val_bal`.
+    # Le choix d'entrainer le modele final sur tout est defendable en soi ; ce
+    # qui ne l'est pas serait de continuer a lire `best_val` comme une mesure
+    # de generalisation. Corriger imposerait de rejouer tous les runs, d'ou ce
+    # commentaire plutot qu'un changement silencieux.
     full_bal = bank.balanced(cfg.n_per_subject, cfg.balance_percentile, seed=cfg.seed)
     print(f"  entrainement final sur {len(full_bal)} pics "
           f"({len(full_bal.subjects)} sujets)")

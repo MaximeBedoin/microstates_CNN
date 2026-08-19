@@ -242,23 +242,44 @@ def aggregate(out: Path, a):
     ks = sorted({c["k"] for c in cells})
     names = sorted({n for c in cells for n in c["auc"]})
 
+    n_seeds = len({c["seed"] for c in cells})
     lines = [f"# Balayage — {cells[0]['dataset']}", "",
-             f"{len({c['seed'] for c in cells})} graines, "
+             f"{n_seeds} graines, "
              f"{cells[0]['n_subjects']} sujets, positif = `{cells[0]['positive']}`.",
              "", "## AUC (moyenne ± écart-type entre graines)", "",
              "| Méthode | " + " | ".join(f"K={k}" for k in ks) + " |",
              "|---|" + "---:|" * len(ks)]
     summary = {"auc": {}, "gev": {}, "vade": {}}
+    incomplets = []
     for n in names:
         row = []
         for k in ks:
             v = np.array([c["auc"][n] for c in cells
                           if c["k"] == k and n in c["auc"]])
-            summary["auc"].setdefault(n, {})[k] = (
-                [float(v.mean()), float(v.std(ddof=1)) if len(v) > 1 else 0.0])
-            row.append(f"{v.mean():.3f} ± {v.std(ddof=1):.3f}" if len(v) > 1
-                       else f"{v.mean():.3f}")
+            n_att = sum(1 for c in cells if c["k"] == k)
+            summary["auc"].setdefault(n, {})[k] = dict(
+                mean=float(v.mean()) if len(v) else None,
+                sd=float(v.std(ddof=1)) if len(v) > 1 else 0.0,
+                n=int(len(v)), n_attendu=int(n_att))
+            if len(v) == 0:
+                row.append("—")
+                continue
+            cell = (f"{v.mean():.3f} ± {v.std(ddof=1):.3f}" if len(v) > 1
+                    else f"{v.mean():.3f}")
+            # un bras qui echoue sur une partie des cellules (pycrostates ne
+            # converge pas toujours) donnerait sinon une moyenne d'apparence
+            # normale, calculee sur moins de graines que les autres, sans que
+            # rien ne le signale
+            if len(v) < n_att:
+                cell += f" ⚠{len(v)}/{n_att}"
+                incomplets.append(f"`{n}` a K={k} : {len(v)}/{n_att} graines")
+            row.append(cell)
         lines.append(f"| `{n}` | " + " | ".join(row) + " |")
+    if incomplets:
+        lines += ["", "> **Moyennes incompletes** — ces bras ont echoue sur une "
+                  "partie des cellules, leur moyenne porte donc sur moins de "
+                  "graines que les autres et n'est pas comparable :", ""]
+        lines += [f"> - {s}" for s in incomplets]
 
     ve = [(c["k"], c["extra"]["vade"]) for c in cells if "vade" in c.get("extra", {})]
     if ve:

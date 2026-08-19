@@ -265,6 +265,18 @@ par vraisemblance** au lieu d'être fixé a priori. Non implémenté.
   également artefactés — l'agitation est un symptôme. Sans troncature à durée
   égale, un classifieur peut séparer les groupes en lisant la durée de signal
   exploitable. Corrigé par `max_duration` dans `iter_ds004504`.
+- **P10 — Le « jeu de validation » du modèle final est inclus dans son jeu
+  d'entraînement.** `fit_models` entraîne le modèle final sur `full_bal`, qui
+  contient TOUS les sujets, tout en validant sur `val_bal`, tiré de
+  `val_bank` — donc sur des sujets déjà vus. Conséquences : le `best_val` de
+  `results.json` n'est pas une estimation hors-échantillon ; l'early stopping
+  ne peut pas détecter de sur-apprentissage puisqu'il regarde des données
+  vues ; et `--select-epoch-by-score`, présenté comme le correctif de H2,
+  évalue la GEV aval sur des sujets que le modèle a vus. La recherche
+  d'architecture, elle, est propre (`train_bal`, disjoint de `val_bal`).
+  Entraîner le modèle final sur tout est un choix défendable ; lire `best_val`
+  comme une mesure de généralisation ne l'est pas.
+
 - **P9 — L'erreur-type d'une AUC ne s'obtient pas par la formule analytique.**
   Hanley–McNeil donne 0.053 à 120 sujets ; la valeur empirique, validation
   croisée comprise, est **0.066** (mesure : 200 réplicats de bruit pur). La
