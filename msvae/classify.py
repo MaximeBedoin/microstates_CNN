@@ -33,20 +33,36 @@ DEFAULT_BANDS = {"delta": (1.0, 4.0), "theta": (4.0, 8.0), "alpha": (8.0, 13.0),
 
 
 # ------------------------------------------------------- vecteurs de features
-def features_from_params(params: list[dict], include_gev_total: bool = False
+def features_from_params(params: list[dict], include_gev_total: bool = False,
+                         include_gev: bool = True
                          ) -> tuple[np.ndarray, list[str]]:
     """Parametres de microstates -> matrice (n_sujets, n_features).
 
-    `gev_total` est EXCLU par defaut : c'est une mesure de qualite d'ajustement
-    du modele, pas un descripteur du sujet. L'inclure laisserait le classifieur
-    lire la qualite du fit plutot que l'etat cerebral, et re-introduirait par
-    la bande la metrique dont on cherche precisement a s'affranchir.
+    ATTENTION a l'interaction entre les deux drapeaux. `gev_total` est exclu par
+    defaut au motif que c'est une qualite d'ajustement et non un descripteur du
+    sujet — mais `microstates.global_explained_variance` retourne
+    `gev_total = gev_k.sum()`, donc garder les K valeurs par classe suffit a
+    reconstituer le total par simple somme, ce qu'un classifieur lineaire fait
+    sans effort. **Exclure `gev_total` en gardant `gev` ne retire donc rien.**
+
+    Le drapeau `include_gev` rend le choix explicite :
+
+      * True (defaut) : jeu de features conforme a la litterature, ou la GEV par
+        classe est rapportee au meme titre que couverture, duree et occurrence.
+        La qualite d'ajustement est alors dans les features, assumee.
+      * False : aucune information de qualite d'ajustement. C'est la version a
+        utiliser pour COMPARER des methodes, ou l'on ne veut pas qu'une methode
+        tire son pouvoir discriminant du fait qu'elle ajuste mieux un groupe
+        que l'autre.
     """
     rows, names = [], None
+    keys = ("coverage", "mean_duration_ms", "occurrence_per_s")
+    if include_gev:
+        keys = keys + ("gev",)
     for p in params:
         vec, nm = [], []
         k = len(p["coverage"])
-        for key in ("coverage", "mean_duration_ms", "occurrence_per_s", "gev"):
+        for key in keys:
             vec.extend(np.asarray(p[key], dtype=float).ravel())
             nm.extend(f"{key}[{c}]" for c in range(k))
         # matrice de transition : la diagonale est nulle par construction

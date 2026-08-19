@@ -100,12 +100,20 @@ def run_cell(a) -> dict:
         t = match_token_to_conv(conv_cfg, n_ch,
                                 elec_pos=_electrode_positions(records[0], n_ch))
         # regime propre au bras token : a 2e-3 il plateaute ~30 epoques et
-        # l'early stopping l'arrete avant qu'il n'ait rien appris
+        # l'early stopping l'arrete avant qu'il n'ait rien appris. 200 epoques
+        # et non 80 : sur les 19 canaux de ds004504 l'optimum tombe a l'epoque
+        # 261, donc 80 le laissait sous-appris — la meme panne, un cran plus
+        # loin.
         r = train_vae(t, full_bal.topo, val_bal.topo, None,
                       TrainConfig(**{**base_tc, "lr": 5e-4, "patience": 10 ** 6,
-                                     "epochs": max(a.epochs, 80)}))
+                                     "epochs": max(a.epochs, 200)}))
         models["token"] = (r.model, t)
-        extra["token_recon"] = float(min(h["val_recon"] for h in r.history))
+        rec = [h["val_recon"] for h in r.history]
+        extra["token_recon"] = float(min(rec))
+        # `best_epoch` proche de la fin = entrainement coupe en cours : la
+        # cellule est alors a jeter, et sans cette trace rien ne le dirait
+        extra["token_best_epoch"] = int(np.argmin(rec))
+        extra["token_n_epochs"] = len(rec)
         extra["token_locality"] = r.model.learned_locality().mean().item()
 
     for kind, (model, mcfg) in models.items():

@@ -53,6 +53,10 @@ def main():
     p.add_argument("--n-splits", type=int, default=5)
     p.add_argument("--n-repeats", type=int, default=10)
     p.add_argument("--n-boot", type=int, default=2000)
+    p.add_argument("--no-gev", action="store_true",
+                   help="retire la GEV par classe des features : la qualite "
+                        "d ajustement ne doit pas porter le pouvoir discriminant "
+                        "quand on COMPARE des methodes")
     p.add_argument("--n-perm", type=int, default=0,
                    help="controle par permutation des etiquettes (0 = ignore)")
     p.add_argument("--seed", type=int, default=0)
@@ -92,7 +96,8 @@ def main():
                   f"{records[0].data.shape[0]})")
             continue
         params = _backfit_params(records, maps, cfg.min_segment_ms)
-        X, names = classify.features_from_params(params)
+        X, names = classify.features_from_params(params,
+                                                 include_gev=not a.no_gev)
         arms[name] = X
         print(f"  {name}: {X.shape[1]} features", flush=True)
 
