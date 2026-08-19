@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import baseline, cluster, evaluate, microstates, plotting
+from . import baseline, cluster, evaluate, microstates, plotting, vade
 from .features import PeakBank
 from .models import VAEConfig, match_dense_to_conv, match_token_to_conv
 from .preprocess import PeakSet, extract_peaks
@@ -63,6 +63,15 @@ class ExperimentConfig:
     token_layers: int = 2
     token_lr: float = 5e-4          # cf. fit_models : 2e-3 fait plateauer le
     token_patience: int = 10 ** 6   # bras token pendant ~30 epoques
+    # VaDE : prior en melange de gaussiennes. `vade_kind` designe le bras dont
+    # l'encodeur sert de point de depart — le contraste entre ce bras et le
+    # bras VaDE isole alors l'effet du PRIOR, et rien d'autre.
+    run_vade: bool = False
+    vade_kind: str = "dense"        # 'conv' | 'dense' | 'token'
+    vade_epochs: int = 40
+    vade_lr: float = 1e-3
+    vade_lambda_balance: float = 0.5  # garde-fou anti-effondrement (mesure :
+    # sans lui, 2 composantes sur 4 seulement sont utilisees)
     seed: int = 0
     out_dir: str = "results/synthetic"
 
@@ -308,8 +317,28 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
         torch.save(dict(state=res_token.model.state_dict(),
                         cfg=token_cfg.to_dict()), out / "model_token.pt")
 
+    vade_model, vade_hist = None, None
+    if cfg.run_vade:
+        base = dict(conv=res_conv, dense=res_dense, token=res_token)[cfg.vade_kind]
+        if base is None:
+            print(f"  VaDE : bras {cfg.vade_kind} absent, ignore")
+        else:
+            print(f"  VaDE sur l'encodeur {cfg.vade_kind}, K={cfg.k}")
+            x = full_bal.images if cfg.vade_kind == "conv" else full_bal.topo
+            xv = val_bal.images if cfg.vade_kind == "conv" else val_bal.topo
+            vade_model, vade_hist = vade.fit_vade(
+                base.model, x, xv, n_components=cfg.k, epochs=cfg.vade_epochs,
+                lr=cfg.vade_lr, lambda_balance=cfg.vade_lambda_balance,
+                batch_size=tcfg.batch_size,
+                mask=mask if cfg.vade_kind == "conv" else None, seed=cfg.seed)
+            torch.save(dict(state=vade_model.state_dict(),
+                            cfg=dict(conv=best_cfg, dense=dense_cfg,
+                                     token=token_cfg)[cfg.vade_kind].to_dict(),
+                            n_components=cfg.k), out / "model_vade.pt")
+
     return dict(conv=res_conv, dense=res_dense, token=res_token,
                 conv_cfg=best_cfg, dense_cfg=dense_cfg, token_cfg=token_cfg,
+                vade=vade_model, vade_history=vade_hist,
                 search=search, train_bank=train_bank, val_bank=val_bank,
                 full_bal=full_bal)
 
@@ -415,6 +444,17 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
             # LA quantite a lire pour trancher H9 : localite apprise par tete
             # et par couche. Proche de 0 = le modele a renonce a la localite.
             learned_locality=fit["token"].model.learned_locality().tolist())
+    if fit.get("vade") is not None:
+        import torch as _torch
+        pri = fit["vade"].prior
+        h = fit["vade_history"][-1]
+        results["models"]["vade"] = dict(
+            base_kind=cfg.vade_kind, n_components=int(pri.k),
+            # poids des composantes : une valeur proche de 0 signale une
+            # composante morte, le mode de defaillance classique de VaDE
+            weights=_torch.softmax(pri.pi_logits.detach(), 0).cpu().tolist(),
+            balance=h.get("train_balance"), balance_max=h.get("train_balance_max"),
+            val_elbo=h.get("val_elbo"), final=h)
     if fit["search"] is not None:
         results["arch_search"] = [
             dict(cfg=s["cfg"].to_dict(), val_loss=s["val_loss"],
@@ -434,6 +474,18 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
             maps_by_method[f"vae_{kind}_{mode}"] = m
             latent[f"{kind}_{mode}"] = (z, lab)
             centroids_by_method[f"vae_{kind}_{mode}"] = (kind, res.model, cen)
+    if fit.get("vade") is not None:
+        # Cartes VaDE = decodage des moyennes des composantes. Aucun k-means
+        # aval : c'est une LECTURE du modele, la ou les autres bras posent un
+        # clustering par-dessus un latent qui ne le prevoyait pas.
+        vm = vade.component_maps(fit["vade"])
+        if vm.ndim > 2:                       # encodeur conv : sortie image
+            vm = bank.projector.to_topo(vm[:, 0] * bank.image_scale,
+                                        method="ridge")
+            vm = vm - vm.mean(axis=1, keepdims=True)
+            vm = vm / np.maximum(np.linalg.norm(vm, axis=1, keepdims=True), 1e-12)
+        maps_by_method[f"vade_{cfg.vade_kind}"] = vm
+
     z, lab = latent["conv_two_stage"]
     plotting.plot_latent(z, lab, out / "figures" / "latent_conv.png",
                          "espace latent (VAE conv), clusters k-means")

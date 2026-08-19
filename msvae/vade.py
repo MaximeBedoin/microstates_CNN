@@ -239,3 +239,50 @@ def elbo(model, x: np.ndarray, mask=None, batch_size: int = 4096) -> float:
         tot += float(loss) * len(xb)
         n += len(xb)
     return tot / max(n, 1)
+
+
+def fit_vade(base_model, x_train, x_val=None, n_components: int = 4,
+             epochs: int = 40, lr: float = 1e-3, lambda_balance: float = 0.5,
+             batch_size: int = 1024, mask=None, seed: int = 0,
+             verbose: bool = True):
+    """Pose un prior en melange sur un VAE DEJA entraine, puis affine.
+
+    Le pre-entrainement n'est pas une commodite : VaDE initialise au hasard
+    converge vers des solutions degenerees. Le protocole est donc toujours
+    (1) VAE ordinaire, (2) k-means sur le latent pour poser le melange,
+    (3) affinage avec l'objectif VaDE. On part ici d'un modele deja entraine
+    par `train_vae`, ce qui garantit que le bras VaDE et le bras dont il derive
+    partagent EXACTEMENT le meme encodeur de depart : le contraste entre eux
+    isole l'effet du prior, et rien d'autre.
+    """
+    import copy
+
+    torch.manual_seed(seed)
+    model = copy.deepcopy(base_model)
+    attach_gmm_prior(model, n_components)
+    init_prior_from_latent(model, x_train, seed=seed)
+
+    dev = model.device
+    xt = torch.as_tensor(np.asarray(x_train, dtype=np.float32))
+    m = None if mask is None else torch.as_tensor(mask).to(dev)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    history = []
+    for ep in range(epochs):
+        model.train()
+        perm = torch.randperm(len(xt))
+        for i in range(0, len(xt), batch_size):
+            xb = xt[perm[i:i + batch_size]].to(dev)
+            opt.zero_grad()
+            loss, diag = vade_loss(model, xb, m, lambda_balance=lambda_balance)
+            loss.backward()
+            opt.step()
+        row = dict(epoch=ep, **{f"train_{k}": v for k, v in diag.items()})
+        if x_val is not None:
+            row["val_elbo"] = elbo(model, x_val, m)
+        history.append(row)
+        if verbose and (ep % 10 == 0 or ep == epochs - 1):
+            extra = f" val_elbo={row['val_elbo']:.4f}" if x_val is not None else ""
+            print(f"    ep{ep:3d} recon={diag['recon']:.4f} kl={diag['kl']:.2f} "
+                  f"equilibre={diag['balance']:.3f}/{diag['balance_max']:.3f}"
+                  f"{extra}", flush=True)
+    return model, history

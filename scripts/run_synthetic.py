@@ -38,6 +38,11 @@ def main():
     p.add_argument("--out", default="results/synthetic")
     p.add_argument("--no-token", action="store_true",
                    help="desactive le bras attention sur electrodes")
+    p.add_argument("--vade", action="store_true",
+                   help="ajoute le bras VaDE (prior en melange de gaussiennes)")
+    p.add_argument("--vade-kind", choices=["conv", "dense", "token"],
+                   default="dense", help="encodeur de depart du bras VaDE")
+    p.add_argument("--vade-epochs", type=int, default=40)
     # amplitude de l'effet de groupe. `--effect transition --effect-t 0.35`
     # place la cohorte dans la zone informative de la courbe de sensibilite :
     # ni au hasard, ni saturee, donc la seule ou les methodes se departagent.
@@ -66,7 +71,8 @@ def main():
         duration=a.duration, snr=a.snr, k=a.k, epochs=a.epochs,
         latent_dim=a.latent_dim, image_size=a.image_size,
         arch_search=not a.no_arch_search, run_pycrostates=not a.no_pycrostates,
-        run_token=not a.no_token,
+        run_token=not a.no_token, run_vade=a.vade, vade_kind=a.vade_kind,
+        vade_epochs=a.vade_epochs,
         stability_refit=a.stability_refit, stability_repeats=a.stability_repeats,
         loss_space=a.loss_space, select_epoch_by_score=a.select_epoch_by_score,
         grid=a.grid, seed=a.seed, out_dir=a.out, **eff)
