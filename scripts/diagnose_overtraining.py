@@ -15,11 +15,9 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from msvae import plotting  # noqa: E402
 from msvae.models import VAEConfig, match_dense_to_conv  # noqa: E402
 from msvae.pipeline import (ExperimentConfig, build_bank, load_records,  # noqa: E402
                             make_downstream_score)

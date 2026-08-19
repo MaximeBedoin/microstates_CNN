@@ -18,7 +18,7 @@ import numpy as np
 from . import baseline, cluster, evaluate, microstates, plotting, vade
 from .features import PeakBank
 from .models import VAEConfig, match_dense_to_conv, match_token_to_conv
-from .preprocess import PeakSet, extract_peaks
+from .preprocess import extract_peaks
 from .topo import TopoProjector
 from .train import TrainConfig, architecture_search, train_vae
 
