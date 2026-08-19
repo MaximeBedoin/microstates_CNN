@@ -61,6 +61,8 @@ class ExperimentConfig:
     run_token: bool = True          # bras attention sur electrodes (TokenVAE)
     token_heads: int = 4
     token_layers: int = 2
+    token_lr: float = 5e-4          # cf. fit_models : 2e-3 fait plateauer le
+    token_patience: int = 10 ** 6   # bras token pendant ~30 epoques
     seed: int = 0
     out_dir: str = "results/synthetic"
 
@@ -274,9 +276,21 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
         token_cfg = match_token_to_conv(best_cfg, n_ch, elec_pos=pos,
                                         n_heads=cfg.token_heads,
                                         n_layers=cfg.token_layers)
+        # Le bras token N'A PAS le meme regime d'optimisation que les autres, et
+        # ce n'est pas un reglage de confort. Mesure : a lr=2e-3 (la valeur des
+        # bras conv et dense) sa reconstruction de validation reste bloquee a
+        # 0.754 pendant ~30 epoques avant de decrocher, pour finir a 0.073 a
+        # l'epoque 76. Avec `patience=10`, l'early stopping l'arrete EN PLEIN
+        # PLATEAU et le bras est evalue sans avoir rien appris — c'est ce qui a
+        # produit le premier verdict, faux, ou il finissait dernier partout.
+        # A lr=5e-4 le plateau disparait entierement (0.754 -> 0.153 en 10
+        # epoques). On lui donne donc son propre lr et pas d'early stopping.
+        ttcfg = TrainConfig(**{**ftcfg.__dict__, "lr": cfg.token_lr,
+                               "patience": cfg.token_patience})
         print(f"  bras token : d_model={token_cfg.d_model}, "
-              f"{cfg.token_layers} couches, {cfg.token_heads} tetes")
-        res_token = train_vae(token_cfg, full_bal.topo, val_bal.topo, None, ftcfg,
+              f"{cfg.token_layers} couches, {cfg.token_heads} tetes, "
+              f"lr={cfg.token_lr:g} (regime propre, voir commentaire)")
+        res_token = train_vae(token_cfg, full_bal.topo, val_bal.topo, None, ttcfg,
                               score_fn=final_score_fn)
 
     (out / "figures").mkdir(parents=True, exist_ok=True)

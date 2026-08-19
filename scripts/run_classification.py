@@ -76,8 +76,11 @@ def main():
     if len(uniq) != 2:
         raise SystemExit(f"il faut exactement deux groupes, trouve : {uniq}")
     pos = a.positive or uniq[1]
+    if pos not in uniq:
+        raise SystemExit(f"groupe positif inconnu : {pos} (dispo : {uniq})")
+    neg = next(g for g in uniq if g != pos)   # et non uniq[0], qui peut valoir pos
     y = (groups == pos).astype(int)
-    print(f"groupes : {uniq[0]}={int((y == 0).sum())}, {pos}={int(y.sum())} "
+    print(f"groupes : {neg}={int((y == 0).sum())}, {pos}={int(y.sum())} "
           f"(positif = {pos})", flush=True)
 
     # ------------------------------------------------------------- features

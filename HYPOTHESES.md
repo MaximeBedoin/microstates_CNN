@@ -218,10 +218,26 @@ par vraisemblance** au lieu d'être fixé a priori. Non implémenté.
 - **P2 — Les sujets de validation servent deux fois** (sélection d'archi puis
   sélection d'époque). Pour un chiffre non biaisé sur données réelles, il faut
   un split à trois : entraînement / sélection / test.
-- **P3 — Une seule graine partout.** Aucun écart rapporté n'a d'intervalle de
-  confiance. L'effet de largeur (0.027) pourrait n'être que du bruit
-  d'initialisation. À corriger en priorité sur GPU, le coût devient
-  négligeable.
+- **P3 — Une seule graine partout. LE PLANCHER DE BRUIT EST MESURÉ, ET IL EST
+  PLUS GRAND QUE PRESQUE TOUS LES EFFETS DU DOCUMENT.** Quatre graines
+  d'entraînement, tout le reste tenu constant, sur le bras token :
+
+  | γ | GEV aval par graine | moyenne ± écart-type |
+  |---:|---|---|
+  | 0.05 | 0.663 · 0.589 · 0.609 · 0.654 | 0.629 ± 0.036 |
+  | 0.693 | 0.609 · 0.648 · 0.678 · 0.627 | 0.641 ± 0.030 |
+  | 3.00 | 0.649 · 0.511 · 0.636 · 0.563 | 0.590 ± 0.065 |
+
+  **La variabilité entre graines vaut 0.03 à 0.065 de GEV.** À comparer aux
+  effets que ce document cherche à expliquer : largeur du réseau 0.027 (H8),
+  β 0.01–0.02 (H3), dégradation du bras conv au fil de l'entraînement 0.010
+  (H2). Tous sont sous le plancher de bruit. Le seul écart qui le dépasse
+  franchement est celui du run de référence entre `vae_conv` et les autres
+  (0.07), et le diagnostic H2 a montré qu'il s'agissait d'un artefact d'époque
+  d'arrêt.
+
+  Conséquence pratique : **aucun écart de GEV inférieur à ~0.07 ne doit être
+  interprété sans plusieurs graines.** Le coût est négligeable sur GPU.
 - **P4 — Les runs courts mentent.** Le run de rodage (6 sujets, 4 époques)
   donnait l'ordre **inverse** : conv 0.96 vs dense 0.82 face au ground truth.
   Aucun run court ne doit servir à trancher cette question.
@@ -395,3 +411,65 @@ artefact et sans que rien ne le signale.
 
 **Ne pas faire `--grid extended`** avant que le banc n'ait tranché : classer 32
 configurations sur une métrique saturée ne produirait que du bruit bien rangé.
+
+---
+
+## H11, suite : ce que le bras token a réellement montré
+
+### Le mécanisme « localité apprise » ne fonctionne pas
+
+L'argument central de H11 était que γ, appris par descente de gradient,
+mesurerait la localité optimale. **C'est faux, et vérifié trois fois.** Avec un
+modèle qui apprend correctement (reconstruction 0.754 → 0.07), trois
+initialisations séparées d'un facteur 60 restent exactement où on les pose :
+
+| init de γ | γ final | reconstruction |
+|---:|---:|---:|
+| 0.05 | 0.056 | 0.0715 |
+| 0.693 | 0.707 | 0.0825 |
+| 3.00 | 2.982 | 0.0810 |
+
+La surface de loss est plate en γ. Lire γ après entraînement ne renseigne que
+sur son initialisation. (Vérifié séparément que γ agit bien sur la sortie —
+|μ| passe de 0.432 à 0.417 entre γ = 0.001 et γ = 10 — donc il ne s'agit pas
+d'un bug mais d'un gradient non informatif.)
+
+### Le balayage de γ ne montre pas d'effet non plus
+
+Traiter γ en hyperparamètre balayé était la parade. À une graine, la courbe
+semblait décroissante puis remontait au dernier point (0.663, 0.670, 0.609,
+0.576, 0.649) : non monotone, donc suspecte. À quatre graines, voir P3 — les
+moyennes se recouvrent, la variabilité entre graines est du même ordre que
+l'écart entre valeurs de γ.
+
+**Conclusion pour H9 : à ce protocole, la localité n'a pas d'effet mesurable
+sur la qualité aval.** Ce n'est ni une confirmation ni une réfutation de
+l'argument des basses fréquences spatiales — c'est un résultat nul, et il
+signifie que ce dispositif ne tranchera pas la question.
+
+### Le piège d'optimisation, à ne pas rouvrir
+
+Le bras token **plateaute pendant ~30 époques** au taux d'apprentissage des
+bras conv et dense (2e-3) avant de décrocher :
+
+    lr=2e-3 : 0.755 0.754 0.754 0.496 0.108 0.081 0.078 0.073  (par 10 époques)
+    lr=5e-4 : 0.754 0.153 0.123 0.103 0.096 0.088 0.085 0.083
+
+Avec `patience=10`, l'early stopping l'arrête en plein plateau. Tous les
+chiffres du bras token antérieurs au correctif mesurent donc un modèle qui n'a
+rien appris — GEV 0.584, AUC 0.603, deux cartes sur quatre, et une stabilité
+split-half de **1.000 ± 0.000** qui en est la signature : un modèle figé est
+parfaitement reproductible. Corrigé par `token_lr` et `token_patience` dans
+`ExperimentConfig`.
+
+*Leçon générale* : la stabilité split-half ne distingue pas un bon modèle d'un
+modèle mort. Elle doit toujours être lue à côté d'une mesure de qualité.
+
+### Ce qui reste de solide
+
+Le seul enseignement du balayage qui ne dépende pas de la monotonie : **la
+reconstruction est plate sur toute la plage de γ (0.0696–0.0825, sans ordre)
+pendant que la GEV aval varie de 0.094.** Une seule variable change, tout le
+reste est tenu constant. C'est la démonstration la plus propre du désalignement
+d'objectif de tout le projet — plus propre que les courbes de sur-entraînement,
+où la durée d'entraînement faisait bouger plusieurs choses à la fois.
