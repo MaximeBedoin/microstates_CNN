@@ -137,22 +137,56 @@ python scripts/sweep.py --dataset synthetic --effect transition --effect-t 0.35 
 
 ---
 
-## 7. Tout refaire sur ds004504 — 4 h
+## 7. Tout refaire sur ds004504, les trois contrastes — 4 h
 
 En dernier, quand le protocole ne bouge plus. Le banc réel actuel est périmé :
 ses bras conv et dense n'ont eu que 30 époques et son bras token n'avait pas
-appris.
+appris. Ré-entraîner les trois bras à convergence, puis le banc, **avec
+plusieurs graines** — la cohorte est fixe mais l'initialisation non.
 
-Ré-entraîner les trois bras à convergence, ajouter VaDE, puis le banc — et
-**avec plusieurs graines**, la cohorte étant fixe mais l'initialisation non.
+Les trois comparaisons deux à deux, qui ne se valent pas :
 
-> Rappel de puissance : 65 sujets non appariés, l'écart d'AUC minimal détectable
-> est de ~0.07–0.08. Ce jeu de données dit si les microstates fonctionnent, pas
-> quelle méthode est la meilleure. Le classement vient du synthétique.
+| Contraste | n | Intérêt |
+|---|---:|---|
+| AD vs CTR | 65 | facile, dominé par le ralentissement global |
+| **AD vs FTD** | 59 | **difficile et cliniquement utile** — les deux groupes sont ralentis, le spectral y a peu de prise |
+| FTD vs CTR | 52 | intermédiaire |
+
+Le second est celui qui vaut l'article : le diagnostic différentiel entre ces
+deux démences est réellement difficile, et c'est le seul contraste où les
+microstates ont une chance d'apporter quelque chose que la puissance par bande
+n'apporte pas.
+
+Montrer AD/CTR **à côté** renforce le propos plutôt que de l'affaiblir : un cas
+où la méthode n'apporte rien rend beaucoup plus crédible le cas où elle apporte.
+
+*EEGBCI est écarté* : yeux ouverts contre yeux fermés est une manipulation
+physiologique, pas une question clinique. L'effet est trivialement porté par
+l'alpha et personne n'a besoin d'un classifieur pour ça.
+
+### Le verrou d'effectif, et ce que les graines ne peuvent pas faire
+
+Deux sources de bruit, une seule réductible :
+
+- **le bruit d'entraînement** (initialisation) — moyenner sur les graines le
+  réduit ;
+- **le bruit d'échantillonnage des sujets** — le bootstrap l'ESTIME, il ne le
+  réduit pas. Avec une cohorte figée, il est irréductible.
+
+Le bootstrap apparié aide beaucoup, parce qu'une grande part de la variabilité
+sujet s'annule quand deux méthodes sont comparées sur les mêmes gens : la
+demi-largeur passe de ~0.09 pour une AUC isolée à ~0.06–0.09 pour une
+différence appariée.
+
+Conséquence : graines et bootstrap ensemble établissent solidement **« sur
+cette cohorte, A bat B »**. Ils n'établiront jamais **« dans la population, A
+bat B »** — ça reste borné par le nombre de sujets. Le classement fin des
+méthodes doit donc venir du synthétique, où le nombre de sujets est un
+paramètre libre.
 
 ---
 
-## 8. Mettre `HYPOTHESES.md` à jour
+## 8. ~~Mettre `HYPOTHESES.md` à jour~~ — FAIT le 20/08
 
 Le document de passation est en retard sur trois points importants :
 
@@ -227,3 +261,25 @@ si un ajout améliore un bras existant.
 
 *Coût : encoder avec les modèles déjà entraînés, agréger, relancer un banc.
 Environ une heure de code, quarante minutes de calcul.*
+
+
+---
+
+## Perspective : CAUEEG
+
+Jeu clinique de dementia nettement plus grand que ds004504 (de l'ordre du
+millier de sujets, à vérifier), avec du MCI — le contraste à la fois le plus
+difficile et le plus utile. Accessible plus tard.
+
+Ce qu'il changerait n'est pas méthodologique mais **d'effectif**, et c'est
+décisif. À 59 ou 65 sujets, l'écart d'AUC minimal détectable est de 0.07–0.08 :
+on peut affirmer « les microstates fonctionnent », jamais « cette méthode est
+meilleure que celle-là ». Le seuil tombe d'un facteur trois ou quatre sur un
+millier de sujets.
+
+**Le classement des méthodes deviendrait mesurable sur du clinique réel**, ce
+qui est aujourd'hui hors d'atteinte et oblige à faire porter tout le classement
+par la cohorte simulée.
+
+Ce serait aussi le bon jeu pour la sélection de K : trouver K sur mille sujets
+a un tout autre poids que sur soixante.
