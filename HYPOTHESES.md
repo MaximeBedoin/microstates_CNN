@@ -1,5 +1,19 @@
 # Hypothèses en cours — pourquoi le bras convolutionnel sous-performe
 
+> **Lire d'abord.** Deux choses ont changé depuis la rédaction initiale, et
+> plusieurs sections ci-dessous n'en tiennent pas compte :
+>
+> 1. **La GEV ne peut pas servir à classer les méthodes** (piège P6). Les
+>    cartes vraies y sont battues par trois méthodes sur quatre. Le critère de
+>    comparaison est désormais le pouvoir discriminant (`msvae/classify.py`).
+>    Tous les tableaux de GEV antérieurs — H3, H8, l'observation à expliquer —
+>    départagent donc des méthodes sur une métrique cassée.
+> 2. **Le plancher de bruit entre graines vaut 0.03 à 0.065 de GEV** (P3).
+>    Presque tous les effets discutés ici lui sont inférieurs.
+>
+> Le résultat principal actuel est plus bas : le bras token devance toutes les
+> méthodes sur trois graines. Suite des vérifications dans `A_FAIRE.md`.
+
 Document de passation. Il récapitule l'observation à expliquer, toutes les
 hypothèses formulées, leur statut, les preuves accumulées et la façon de
 tester celles qui restent ouvertes.
@@ -96,7 +110,9 @@ reste à faire.
 (reconstruction et GEV aval) époque par époque pour les deux bras.
 **Correctif implémenté** : `--select-epoch-by-score`.
 
-#### Mesure effectuée (GPU, `--batch-size 1024`) — mécanisme confirmé, attribution fausse
+#### Première mesure (60 époques, `--batch-size 1024`) — TROP COURTE, conclusion erronée
+
+> **Cette sous-section est conservée comme mise en garde, pas comme résultat.** Elle avait conduit à corriger l'attribution de H2 en affirmant que le bras dense souffrait le plus. La mesure à 600 époques plus bas montre l'inverse, et donne raison à la formulation d'origine. 60 époques à `--batch-size 1024` valent environ 15 époques du run de référence : c'était trop court pour voir l'effet.
 
 `results/diagnostics/` :
 
@@ -124,6 +140,95 @@ mesurent pas la même chose — `models.polarity_invariant_recon` normalise le
 conv par les ~620 pixels du masque (des valeurs interpolées) et le dense par
 les 64 électrodes mesurées. C'est exactement l'objet de H4. Le run ci-dessus
 donne d'ailleurs l'ordre inverse (0.061 contre 0.047).
+
+#### Mesure à 600 époques, budget et objectif identiques — H2 CONFIRMÉE
+
+Trois architectures, 600 époques chacune, early stopping désactivé, et
+`loss_space=topo` — donc un objectif en espace capteur **identique pour les
+trois**. Une seule variable change : la durée d'entraînement.
+(`results/synth_t035_transition/`, `scripts/plot_downstream_curves.py`.)
+
+| Bras | reconstruction | GEV aval max → finale | Chute |
+|---|---:|---|---:|
+| `conv` | 0.0888 → 0.0261 | 0.683 → 0.612 | **−0.072** |
+| `token` | 0.7544 → 0.0396 | 0.667 → 0.622 | −0.044 |
+| `dense` | 0.0740 → 0.0318 | 0.698 → 0.693 | −0.006 |
+
+La courbe du conv descend continûment (0.692 0.682 0.677 0.680 0.657 0.639
+0.623 0.595 …) puis se stabilise vers 0.61, pendant que sa reconstruction
+s'améliore d'un facteur 3.4. **H2 est donc confirmée, et son attribution
+d'origine au bras conv était la bonne** : la chute mesurée, −0.072, correspond
+presque exactement aux −0.073 rapportés au départ.
+
+**Corollaire : H4 n'explique pas H2.** Ce run utilise `loss_space=topo`, donc
+un objectif strictement identique à celui du dense, et le conv se dégrade quand
+même. Ce n'est pas la loss en espace image qui est en cause — c'est l'encodeur
+convolutionnel lui-même qui perd sa géométrie latente en s'entraînant.
+
+L'ordre est instructif : conv (−0.072) → token (−0.044) → dense (−0.006). Le
+bras token n'a aucune convolution mais impose un biais de localité par les
+distances, et se situe entre les deux. La dégradation semble suivre le degré de
+contrainte spatiale imposée à l'encodeur — testable en balayant γ.
+
+*Réserve* : une seule graine. La chute du conv dépasse le plancher de bruit
+(P3), celle du dense non. Un second entraînement à graine identique donne
+−0.072 contre −0.078, l'écart venant du non-déterminisme CUDA : le bruit de
+mesure à graine fixée vaut ~0.006, bien en deçà des effets conv et token.
+
+---
+
+## Résultat principal : le bras token devance toutes les méthodes
+
+Cohorte t = 0.35 (effet de transition à durées appariées), 120 sujets, K = 4,
+600 époques pour les trois bras. **Trois graines, chacune changeant à la fois la
+cohorte et l'initialisation.** (`results/sweep_seeds_t035/`.)
+
+| Écart d'AUC (token − autre) | graine 0 | graine 1 | graine 2 | moyenne |
+|---|---:|---:|---:|---:|
+| vs `pycrostates` | +0.082 | +0.025 | +0.063 | **+0.057** |
+| vs `pca8_modkmeans` | +0.096 | +0.027 | +0.062 | **+0.062** |
+| vs `vae_conv` | +0.114 | +0.084 | +0.049 | +0.082 |
+| vs `vae_dense` | +0.112 | +0.071 | +0.051 | +0.078 |
+| vs `vade_dense` | +0.091 | +0.045 | +0.203 | +0.113 |
+| vs `spectral_global` | +0.362 | +0.343 | +0.379 | +0.361 |
+
+**Le signe est positif sur les trois graines, pour toutes les comparaisons.**
+C'est le premier bras d'apprentissage profond du projet à battre le pipeline
+classique et la compression linéaire, de façon reproductible, sur une métrique
+tenue hors de la boucle de sélection.
+
+Contre les **cartes vraies**, le signe change selon la graine (+0.093, −0.005,
++0.033) : le token les égale sans les dépasser. Le plafond reste un plafond.
+
+### Le fait le plus important de tout le projet
+
+| Graine | GEV du token | GEV de `pycrostates` |
+|---:|---:|---:|
+| 0 | 0.613 | 0.697 |
+| 1 | 0.630 | 0.690 |
+| 2 | 0.649 | 0.692 |
+
+**Le token a la GEV la plus basse ET le pouvoir discriminant le plus élevé, sur
+les trois graines.** Les deux métriques pointent en sens opposé de façon
+systématique. La GEV — la métrique historique du domaine — aurait classé cette
+méthode dernière alors qu'elle est la meilleure sur le seul critère qui compte
+cliniquement. C'est la justification la plus directe de tout le travail sur le
+banc de classification, et le piège P6 sous sa forme la plus frappante.
+
+### Ce qui n'est pas encore établi
+
+- **Deux graines manquent** sur les cinq prévues.
+- **Le taux d'apprentissage reste asymétrique** : le token tourne à 5e-4, les
+  autres à 2e-3. C'est le contournement d'un plateau qui lui est propre, mais
+  personne n'a vérifié que conv et dense ne feraient pas mieux au même taux.
+  C'est l'objection la plus prévisible ; le test est prêt dans
+  `results/synth_t035_lr5e4`.
+- **Rien sur données réelles** : le banc ds004504 valide date d'avant les
+  correctifs.
+- **La GEV par classe est dans les features** du classifieur, et c'est une
+  mesure de qualité d'ajustement. Contrôle `--no-gev` non encore exécuté.
+
+Voir `A_FAIRE.md` pour l'ordre des vérifications restantes.
 
 ---
 
