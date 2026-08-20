@@ -15,10 +15,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import baseline, cluster, evaluate, microstates, plotting
+from . import baseline, cluster, evaluate, microstates, plotting, vade
 from .features import PeakBank
-from .models import VAEConfig, match_dense_to_conv
-from .preprocess import PeakSet, extract_peaks
+from .models import VAEConfig, match_dense_to_conv, match_token_to_conv
+from .preprocess import extract_peaks
 from .topo import TopoProjector
 from .train import TrainConfig, architecture_search, train_vae
 
@@ -27,11 +27,25 @@ from .train import TrainConfig, architecture_search, train_vae
 @dataclass
 class ExperimentConfig:
     name: str = "synthetic"
-    dataset: str = "synthetic"      # 'synthetic' | 'eegbci'
+    dataset: str = "synthetic"      # 'synthetic' | 'eegbci' | 'ds004504'
+    ds_groups: tuple = ("AD", "CTR")  # ds004504 : groupes a charger
     n_subjects: int = 20
     duration: float = 60.0          # synthetique uniquement
     snr: float = 1.0                # synthetique uniquement
     n_states_true: int = 4          # synthetique uniquement
+    # amplitude des deux composantes de l'effet de groupe (synthetique). Voir
+    # synthetic.simulate_dataset : un effet de DUREE se lit dans le spectre et
+    # ne demontre donc rien sur l'apport des microstates ; seul un effet de
+    # TRANSITION a durees appariees le fait. Defauts = cohorte de reference.
+    mean_dur_g1: float = 0.085
+    mean_dur_g2: float = 0.065
+    trans_boost: float = 2.5
+    # Montage simule. `standard_1020` (19 electrodes) reproduit les
+    # conditions de ds004504 : le rendu image y devient interpole a plus de
+    # 90 %, exactement la situation du jeu clinique. Regler des
+    # hyperparametres sur du 64 canaux puis les appliquer a du 19 n'aurait
+    # pas de raison de transferer.
+    montage: str = "biosemi64"
     k: int = 4                      # K du clustering
     latent_dim: int = 8
     image_size: int = 32
@@ -50,6 +64,25 @@ class ExperimentConfig:
     score_every: int = 5            # frequence d'evaluation du critere aval
     grid: str = "default"           # 'default' | 'extended' 
     run_pycrostates: bool = True
+    run_token: bool = True          # bras attention sur electrodes (TokenVAE)
+    token_heads: int = 4
+    token_layers: int = 2
+    token_lr: float = 5e-4          # cf. fit_models : 2e-3 fait plateauer le
+    token_patience: int = 10 ** 6   # bras token pendant ~30 epoques
+    token_epochs: int = 0           # 0 = max(epochs, 200). Le bras token
+    # converge BEAUCOUP plus lentement que les autres : optimum a l'epoque 76
+    # sur 64 canaux, 261 sur les 19 canaux de ds004504. Lui donner les epochs
+    # des autres bras (40, voire 30) le laisse sous-appris — c'est exactement
+    # la panne qui a produit un premier verdict faux ou il finissait dernier.
+    # VaDE : prior en melange de gaussiennes. `vade_kind` designe le bras dont
+    # l'encodeur sert de point de depart — le contraste entre ce bras et le
+    # bras VaDE isole alors l'effet du PRIOR, et rien d'autre.
+    run_vade: bool = False
+    vade_kind: str = "dense"        # 'conv' | 'dense' | 'token'
+    vade_epochs: int = 40
+    vade_lr: float = 1e-3
+    vade_lambda_balance: float = 0.5  # garde-fou anti-effondrement (mesure :
+    # sans lui, 2 composantes sur 4 seulement sont utilisees)
     seed: int = 0
     out_dir: str = "results/synthetic"
 
@@ -70,9 +103,19 @@ class ExperimentState:
 
 # ----------------------------------------------------------------- helpers
 def info_from_record(rec, montage: str | None = None):
+    """Info MNE d'un enregistrement.
+
+    Resout les cles de `synthetic.MONTAGE_PRESETS` (par exemple
+    `ds004504_19`, qui restreint le 10-20 aux 19 electrodes cliniques) : sans
+    cela `make_standard_montage` reçoit un nom qu'il ne connait pas.
+    """
     import mne
 
+    from .synthetic import MONTAGE_PRESETS
+
     montage = montage or rec.extra.get("montage", "standard_1005")
+    if montage in MONTAGE_PRESETS:
+        montage = MONTAGE_PRESETS[montage][0]
     info = mne.create_info(list(rec.ch_names), rec.sfreq, "eeg")
     info.set_montage(mne.channels.make_standard_montage(montage),
                      on_missing="ignore", verbose="error")
@@ -81,15 +124,24 @@ def info_from_record(rec, montage: str | None = None):
 
 def load_records(cfg: ExperimentConfig):
     """Retourne (records, ground_truth_maps | None)."""
-    from .data import iter_eegbci, iter_synthetic
+    from .data import iter_ds004504, iter_eegbci, iter_synthetic
 
     if cfg.dataset == "synthetic":
         recs, gt = iter_synthetic(n_subjects=cfg.n_subjects, duration=cfg.duration,
                                   snr=cfg.snr, n_states=cfg.n_states_true,
-                                  seed=cfg.seed)
+                                  seed=cfg.seed, mean_dur_g1=cfg.mean_dur_g1,
+                                  mean_dur_g2=cfg.mean_dur_g2,
+                                  trans_boost=cfg.trans_boost,
+                                  montage=cfg.montage)
         for r in recs:
-            r.extra["montage"] = "biosemi64"
+            r.extra["montage"] = cfg.montage
         return recs, gt
+    if cfg.dataset == "ds004504":
+        recs = list(iter_ds004504(groups=tuple(cfg.ds_groups),
+                                  max_subjects=cfg.n_subjects or None))
+        for r in recs:
+            r.extra["montage"] = "standard_1020"
+        return recs, None
     recs = list(iter_eegbci(n_subjects=cfg.n_subjects))
     for r in recs:
         r.extra["montage"] = "standard_1005"
@@ -227,7 +279,24 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
 
     dense_cfg = match_dense_to_conv(best_cfg, n_ch)
 
-    # entrainement final : tous les sujets, equilibres
+    # Entrainement final : TOUS les sujets, equilibres.
+    #
+    # ATTENTION, consequence a ne pas perdre de vue. `val_bal` est tire de
+    # `val_bank`, dont les sujets sont INCLUS dans `full_bal` : le jeu dit de
+    # validation est donc un SOUS-ENSEMBLE du jeu d'entrainement a ce stade.
+    # Trois consequences :
+    #   * `best_val` rapporte dans results.json n'est pas une estimation
+    #     hors-echantillon ;
+    #   * l'early stopping sur `val_loss` ne peut pas detecter de
+    #     sur-apprentissage, puisqu'il regarde des donnees vues ;
+    #   * `--select-epoch-by-score` evalue la GEV aval sur des sujets que le
+    #     modele a vus, ce qui affaiblit le correctif de H2.
+    # La recherche d'architecture, elle, est propre : elle utilise `train_bal`
+    # (ligne ~251), disjoint de `val_bal`.
+    # Le choix d'entrainer le modele final sur tout est defendable en soi ; ce
+    # qui ne l'est pas serait de continuer a lire `best_val` comme une mesure
+    # de generalisation. Corriger imposerait de rejouer tous les runs, d'ou ce
+    # commentaire plutot qu'un changement silencieux.
     full_bal = bank.balanced(cfg.n_per_subject, cfg.balance_percentile, seed=cfg.seed)
     print(f"  entrainement final sur {len(full_bal)} pics "
           f"({len(full_bal.subjects)} sujets)")
@@ -245,6 +314,36 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
                          score_fn=final_score_fn, readout=readout)
     res_dense = train_vae(dense_cfg, full_bal.topo, val_bal.topo, None, ftcfg,
                           score_fn=final_score_fn)
+    _warn_if_not_converged("conv", res_conv)
+    _warn_if_not_converged("dense", res_dense)
+
+    # bras token : attention sur les electrodes, sans image. Meme entree que le
+    # bras dense (vecteurs de capteurs) et meme decodeur, donc l'ablation porte
+    # exactement sur l'encodeur. Necessite les positions 3D des electrodes.
+    token_cfg = res_token = None
+    if cfg.run_token and records is not None:
+        pos = _electrode_positions(records[0], n_ch)
+        token_cfg = match_token_to_conv(best_cfg, n_ch, elec_pos=pos,
+                                        n_heads=cfg.token_heads,
+                                        n_layers=cfg.token_layers)
+        # Le bras token N'A PAS le meme regime d'optimisation que les autres, et
+        # ce n'est pas un reglage de confort. Mesure : a lr=2e-3 (la valeur des
+        # bras conv et dense) sa reconstruction de validation reste bloquee a
+        # 0.754 pendant ~30 epoques avant de decrocher, pour finir a 0.073 a
+        # l'epoque 76. Avec `patience=10`, l'early stopping l'arrete EN PLEIN
+        # PLATEAU et le bras est evalue sans avoir rien appris — c'est ce qui a
+        # produit le premier verdict, faux, ou il finissait dernier partout.
+        # A lr=5e-4 le plateau disparait entierement (0.754 -> 0.153 en 10
+        # epoques). On lui donne donc son propre lr et pas d'early stopping.
+        n_ep = cfg.token_epochs or max(cfg.epochs, 200)
+        ttcfg = TrainConfig(**{**ftcfg.__dict__, "lr": cfg.token_lr,
+                               "patience": cfg.token_patience, "epochs": n_ep})
+        print(f"  bras token : d_model={token_cfg.d_model}, "
+              f"{cfg.token_layers} couches, {cfg.token_heads} tetes, "
+              f"lr={cfg.token_lr:g}, {n_ep} epoques (regime propre)")
+        res_token = train_vae(token_cfg, full_bal.topo, val_bal.topo, None, ttcfg,
+                              score_fn=final_score_fn)
+        _warn_if_not_converged("token", res_token)
 
     (out / "figures").mkdir(parents=True, exist_ok=True)
     plotting.plot_training(res_conv.history, out / "figures" / "training_conv.png")
@@ -257,10 +356,63 @@ def fit_models(cfg: ExperimentConfig, bank: PeakBank, out: Path,
                out / "model_conv.pt")
     torch.save(dict(state=res_dense.model.state_dict(), cfg=dense_cfg.to_dict()),
                out / "model_dense.pt")
+    if res_token is not None:
+        torch.save(dict(state=res_token.model.state_dict(),
+                        cfg=token_cfg.to_dict()), out / "model_token.pt")
 
-    return dict(conv=res_conv, dense=res_dense, conv_cfg=best_cfg,
-                dense_cfg=dense_cfg, search=search,
-                train_bank=train_bank, val_bank=val_bank, full_bal=full_bal)
+    vade_model, vade_hist = None, None
+    if cfg.run_vade:
+        base = dict(conv=res_conv, dense=res_dense, token=res_token)[cfg.vade_kind]
+        if base is None:
+            print(f"  VaDE : bras {cfg.vade_kind} absent, ignore")
+        else:
+            print(f"  VaDE sur l'encodeur {cfg.vade_kind}, K={cfg.k}")
+            x = full_bal.images if cfg.vade_kind == "conv" else full_bal.topo
+            xv = val_bal.images if cfg.vade_kind == "conv" else val_bal.topo
+            vade_model, vade_hist = vade.fit_vade(
+                base.model, x, xv, n_components=cfg.k, epochs=cfg.vade_epochs,
+                lr=cfg.vade_lr, lambda_balance=cfg.vade_lambda_balance,
+                batch_size=tcfg.batch_size,
+                mask=mask if cfg.vade_kind == "conv" else None, seed=cfg.seed)
+            torch.save(dict(state=vade_model.state_dict(),
+                            cfg=dict(conv=best_cfg, dense=dense_cfg,
+                                     token=token_cfg)[cfg.vade_kind].to_dict(),
+                            n_components=cfg.k), out / "model_vade.pt")
+
+    return dict(conv=res_conv, dense=res_dense, token=res_token,
+                conv_cfg=best_cfg, dense_cfg=dense_cfg, token_cfg=token_cfg,
+                vade=vade_model, vade_history=vade_hist,
+                search=search, train_bank=train_bank, val_bank=val_bank,
+                full_bal=full_bal)
+
+
+def _warn_if_not_converged(name: str, res, tail_frac: float = 0.1) -> bool:
+    """Signale un bras dont la reconstruction descendait encore a l'arret.
+
+    Un optimum situe dans les dernieres epoques veut dire qu'on a coupe un
+    entrainement en cours, et les metriques aval qui en decoulent mesurent
+    alors un modele sous-appris. C'est passe inapercu deux fois sur le bras
+    token — une premiere fois bloque sur son plateau, une seconde fois arrete
+    a l'epoque 79 sur 80 alors qu'il progressait encore.
+    """
+    rec = [h.get("val_recon") for h in res.history if h.get("val_recon") is not None]
+    if len(rec) < 5:
+        return False
+    best = int(np.argmin(rec))
+    if best >= len(rec) - max(2, int(tail_frac * len(rec))):
+        print(f"  ATTENTION [{name}] : optimum a l'epoque {best}/{len(rec) - 1}, "
+              f"la reconstruction descendait encore. Modele probablement "
+              f"sous-appris — augmenter les epoques avant d'interpreter.",
+              flush=True)
+        return True
+    return False
+
+
+def _electrode_positions(record, n_ch: int) -> tuple:
+    """Positions 3D des electrodes, en tuple (JSON-serialisable via VAEConfig)."""
+    info = info_from_record(record)
+    pos = np.array([info["chs"][i]["loc"][:3] for i in range(n_ch)], dtype=float)
+    return tuple(map(tuple, pos))
 
 
 # --------------------------------------------------------------- evaluation
@@ -347,6 +499,27 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
                    n_params=fit["dense"].model.n_params(),
                    best_val=fit["dense"].best_val, seconds=fit["dense"].seconds,
                    final=fit["dense"].history[-1]))
+    if fit.get("token") is not None:
+        results["models"]["token"] = dict(
+            cfg={k: v for k, v in fit["token_cfg"].to_dict().items()
+                 if k != "elec_pos"},          # 64x3 flottants, inutile ici
+            n_params=fit["token"].model.n_params(),
+            best_val=fit["token"].best_val, seconds=fit["token"].seconds,
+            final=fit["token"].history[-1],
+            # LA quantite a lire pour trancher H9 : localite apprise par tete
+            # et par couche. Proche de 0 = le modele a renonce a la localite.
+            learned_locality=fit["token"].model.learned_locality().tolist())
+    if fit.get("vade") is not None:
+        import torch as _torch
+        pri = fit["vade"].prior
+        h = fit["vade_history"][-1]
+        results["models"]["vade"] = dict(
+            base_kind=cfg.vade_kind, n_components=int(pri.k),
+            # poids des composantes : une valeur proche de 0 signale une
+            # composante morte, le mode de defaillance classique de VaDE
+            weights=_torch.softmax(pri.pi_logits.detach(), 0).cpu().tolist(),
+            balance=h.get("train_balance"), balance_max=h.get("train_balance_max"),
+            val_elbo=h.get("val_elbo"), final=h)
     if fit["search"] is not None:
         results["arch_search"] = [
             dict(cfg=s["cfg"].to_dict(), val_loss=s["val_loss"],
@@ -356,13 +529,32 @@ def run_experiment(cfg: ExperimentConfig, tcfg: TrainConfig | None = None
     print("[4/7] clustering latent + decodage")
     maps_by_method = {}
     latent, centroids_by_method = {}, {}
-    for kind, res in (("conv", fit["conv"]), ("dense", fit["dense"])):
+    arms = [("conv", fit["conv"]), ("dense", fit["dense"])]
+    if fit.get("token") is not None:
+        arms.append(("token", fit["token"]))
+    for kind, res in arms:
         for mode in ("two_stage", "weighted"):
             m, z, lab, _, cen = cluster.decoded_maps_from_bank(
                 res.model, bank, cfg.k, mode=mode, seed=cfg.seed, kind=kind)
             maps_by_method[f"vae_{kind}_{mode}"] = m
             latent[f"{kind}_{mode}"] = (z, lab)
             centroids_by_method[f"vae_{kind}_{mode}"] = (kind, res.model, cen)
+    if fit.get("vade") is not None:
+        # Cartes VaDE = decodage des moyennes des composantes. Aucun k-means
+        # aval : c'est une LECTURE du modele, la ou les autres bras posent un
+        # clustering par-dessus un latent qui ne le prevoyait pas.
+        # `full_bal` est local a fit_models ; il est reexporte dans `fit`
+        vbal = fit["full_bal"]
+        vm = vade.component_maps(
+            fit["vade"],
+            vbal.images if cfg.vade_kind == "conv" else vbal.topo)
+        if vm.ndim > 2:                       # encodeur conv : sortie image
+            vm = bank.projector.to_topo(vm[:, 0] * bank.image_scale,
+                                        method="ridge")
+            vm = vm - vm.mean(axis=1, keepdims=True)
+            vm = vm / np.maximum(np.linalg.norm(vm, axis=1, keepdims=True), 1e-12)
+        maps_by_method[f"vade_{cfg.vade_kind}"] = vm
+
     z, lab = latent["conv_two_stage"]
     plotting.plot_latent(z, lab, out / "figures" / "latent_conv.png",
                          "espace latent (VAE conv), clusters k-means")
@@ -474,7 +666,7 @@ def run_stability(cfg: ExperimentConfig, bank, info, fit, tcfg=None) -> dict:
                 bal = sub_bank.balanced(cfg.n_per_subject, cfg.balance_percentile,
                                         seed=cfg.seed)
                 x = bal.images if kind == "conv" else bal.topo
-                mcfg = fit["conv_cfg"] if kind == "conv" else fit["dense_cfg"]
+                mcfg = fit[f"{kind}_cfg"]
                 m = train_vae(mcfg, x, None, mask if kind == "conv" else None,
                               tcfg).model
             return cluster.decoded_maps_from_bank(m, sub_bank, cfg.k,
@@ -483,7 +675,8 @@ def run_stability(cfg: ExperimentConfig, bank, info, fit, tcfg=None) -> dict:
         return fn
 
     n_rep = cfg.stability_repeats
-    for kind in ("conv", "dense"):
+    kinds = ["conv", "dense"] + (["token"] if fit.get("token") is not None else [])
+    for kind in kinds:
         model = None if cfg.stability_refit else fit[kind].model
         reps = max(2, n_rep // 4) if cfg.stability_refit else n_rep
         out[f"vae_{kind}"] = _jsonable(evaluate.split_half_stability(

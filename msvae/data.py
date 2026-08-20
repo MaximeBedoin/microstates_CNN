@@ -161,19 +161,32 @@ def iter_eegbci(n_subjects: int = 40, runs=(1, 2), cache: SubjectCache | None = 
 def iter_synthetic(n_subjects: int = 20, duration: float = 60.0, snr: float = 1.0,
                    n_states: int = 4, seed: int = 0, sfreq: float = 250.0,
                    cache: SubjectCache | None = None, l_freq: float = 1.0,
-                   h_freq: float = 40.0, verbose: bool = True):
-    """Genere les SubjectRecord de la cohorte synthetique (+ ground truth)."""
+                   h_freq: float = 40.0, verbose: bool = True,
+                   mean_dur_g1: float = 0.085, mean_dur_g2: float = 0.065,
+                   trans_boost: float = 2.5, montage: str = "biosemi64"):
+    """Genere les SubjectRecord de la cohorte synthetique (+ ground truth).
+
+    `mean_dur_g2` / `trans_boost` : amplitude des deux composantes de l'effet
+    de groupe (cf. `synthetic.simulate_dataset`). Elles entrent dans la cle de
+    cache, sans quoi deux points d'une courbe de sensibilite se recouvriraient
+    silencieusement.
+    """
     import mne
 
     from .preprocess import preprocess_raw
     from .synthetic import simulate_dataset
 
     mne.set_log_level("error")
-    tag = f"synth_n{n_subjects}_d{int(duration)}_snr{snr}_k{n_states}_s{seed}"
+    tag = (f"synth_n{n_subjects}_d{int(duration)}_snr{snr}_k{n_states}_s{seed}"
+           f"_d1{mean_dur_g1:g}_d2{mean_dur_g2:g}_tb{trans_boost:g}"
+           f"_{montage}")
     cache = cache or SubjectCache(tag=tag)
     subs, group_maps = simulate_dataset(n_subjects=n_subjects, duration=duration,
                                         n_states=n_states, sfreq=sfreq, snr=snr,
-                                        seed=seed)
+                                        seed=seed, mean_dur_g1=mean_dur_g1,
+                                        mean_dur_g2=mean_dur_g2,
+                                        trans_boost=trans_boost,
+                                        montage=montage)
     np.save(cache.root / "ground_truth_maps.npy", group_maps)
     out = []
     for s in subs:
@@ -191,3 +204,153 @@ def iter_synthetic(n_subjects: int = 20, duration: float = 60.0, snr: float = 1.
         if verbose:
             print(f"  {s.subject} ({s.group}): {rec.data.shape}")
     return out, group_maps
+
+
+# ------------------------------------------------------------------- ds004504
+# Nomenclature ancienne du 10-20 clinique -> noms du montage MNE standard.
+_DS004504_RENAME = {"T3": "T7", "T4": "T8", "T5": "P7", "T6": "P8"}
+DS004504_GROUPS = {"A": "AD", "F": "FTD", "C": "CTR"}
+
+
+def read_participants(root: Path | str) -> dict:
+    """participants.tsv -> {sub-XXX: {group, age, gender, mmse}}."""
+    root = Path(root)
+    lines = (root / "participants.tsv").read_text().splitlines()
+    header = lines[0].split("\t")
+    idx = {name: i for i, name in enumerate(header)}
+    out = {}
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        f = line.split("\t")
+        sid = f[idx["participant_id"]].strip()
+        out[sid] = dict(group=DS004504_GROUPS.get(f[idx["Group"]].strip(),
+                                                  f[idx["Group"]].strip()),
+                        age=float(f[idx["Age"]]), gender=f[idx["Gender"]].strip(),
+                        mmse=float(f[idx["MMSE"]]))
+    return out
+
+
+def select_subjects(meta: dict, groups, max_subjects=None) -> list:
+    """Sujets a charger, tronques DE FACON STRATIFIEE.
+
+    ds004504 est ordonne par groupe (sub-001..036 = AD, 037..059 = FTD,
+    060..088 = temoins). Tronquer la liste globale donnait donc une cohorte
+    mono-classe : `--n-subjects 20` sur (AD, CTR) rendait 20 patients et zero
+    temoin, et l'echec ne survenait qu'apres l'entrainement, dans la
+    comparaison de groupes. On prend autant de sujets de chaque groupe.
+    """
+    keep = [s for s, m in sorted(meta.items()) if m["group"] in groups]
+    if not max_subjects:
+        return keep
+    par_groupe = max(1, max_subjects // max(len(groups), 1))
+    sel = []
+    for g in groups:
+        sel += [s for s in keep if meta[s]["group"] == g][:par_groupe]
+    return sorted(sel)
+
+
+def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
+                  cache: SubjectCache | None = None, l_freq: float = 1.0,
+                  h_freq: float = 40.0, epoch_length: float | None = 2.0,
+                  reject_ptp: float | str | None = "auto", max_subjects=None,
+                  resample_to: float | None = 250.0,
+                  max_duration: float | None = 240.0, verbose: bool = True):
+    """Genere les SubjectRecord de ds004504 (AD / FTD / temoins, 19 canaux).
+
+    Miltiadous et al., Data 8(6):95, 2023. Repos yeux fermes, 500 Hz, ~10 min
+    par sujet, 36 AD / 23 FTD / 29 temoins.
+
+    On lit les donnees BRUTES (`sub-*`), pas les derivees : celles-ci ont deja
+    subi filtrage, ASR et ICA, ce qui ferait double emploi avec `preprocess_raw`
+    et rendrait l'effet de notre propre pretraitement ininterpretable.
+
+    Attention : 19 electrodes en 10-20, contre 64 pour la cohorte synthetique et
+    EEGBCI. Les resultats ne sont donc PAS comparables terme a terme a ceux de
+    `results/synthetic/` — rendre une image 32x32 a partir de 19 capteurs rend
+    la quasi-totalite des pixels interpolee.
+
+    `resample_to` : ces enregistrements font ~10 min a 500 Hz, soit environ dix
+    fois la charge d'un sujet synthetique, et les phases aval (back-fitting,
+    encodage continu, rendu image de chaque echantillon) sont lineaires en
+    nombre d'echantillons. Mesure : le run de rodage sur 6 sujets a consomme
+    plus de 35 min de CPU dans ces phases. Comme le signal est de toute facon
+    filtre a 40 Hz, 250 Hz reste tres au-dessus de Nyquist : on divise le cout
+    par deux sans rien perdre. Mettre None pour conserver 500 Hz.
+
+    `max_duration` : tronque chaque sujet a la MEME duree de signal propre.
+    Ce n'est pas qu'une economie, c'est un correctif de CONFOND. Deux des
+    features du banc de classification — la complexite de Lempel-Ziv et le taux
+    d'entropie — sont biaisees par la longueur de la sequence. Or le rejet
+    d'epochs artefactees ne retire pas la meme proportion chez tous (mesure sur
+    les premiers sujets : 3 a 11 %), et il n'y a aucune raison que les patients
+    et les temoins soient egalement artefactes — l'agitation est un symptome.
+    Sans troncature, un classifieur pourrait donc separer les groupes en lisant
+    la duree d'enregistrement exploitable plutot que l'etat cerebral. 4 min de
+    repos propre est par ailleurs l'ordre de grandeur usuel des etudes de
+    microstates. Mettre None pour tout garder.
+    """
+    import mne
+
+    from .preprocess import clean_epochs, preprocess_raw
+
+    mne.set_log_level("error")
+    root = Path(root)
+    # tag distinct du repertoire de telechargement : `cache/ds004504` contient
+    # le jeu BIDS, les .npz pretraites vont dans `cache/ds004504_prep`. Les
+    # melanger polluait l'arborescence BIDS et cassait sa validation.
+    cache = cache or SubjectCache(tag="ds004504_prep")
+    meta = read_participants(root)
+    keep = select_subjects(meta, groups, max_subjects)
+    if verbose and max_subjects:
+        from collections import Counter
+        print(f"  troncature stratifiee : "
+              f"{dict(Counter(meta[s]['group'] for s in keep))}", flush=True)
+
+    for sid in keep:
+        m = meta[sid]
+        key = (f"{sid}_{m['group']}_{int(resample_to or 0)}"
+               f"_{int(max_duration or 0)}")
+        if cache.has(key):
+            yield cache.load(key)
+            continue
+        path = root / sid / "eeg" / f"{sid}_task-eyesclosed_eeg.set"
+        try:
+            raw = mne.io.read_raw_eeglab(path, preload=True, verbose="error")
+            raw.rename_channels({k: v for k, v in _DS004504_RENAME.items()
+                                 if k in raw.ch_names})
+            raw.set_montage("standard_1020", on_missing="warn")
+            raw = preprocess_raw(raw, l_freq, h_freq)
+            # apres le filtre passe-bas, donc sans repliement
+            if resample_to and float(raw.info["sfreq"]) > resample_to:
+                raw.resample(resample_to)
+            if epoch_length:
+                data, bounds, dropped = clean_epochs(raw, epoch_length, reject_ptp)
+            else:
+                data, bounds, dropped = raw.get_data(), np.array([0], int), 0
+            n_keep = data.shape[1]
+            if max_duration:
+                n_keep = min(n_keep, int(max_duration * float(raw.info["sfreq"])))
+                data = data[:, :n_keep]
+                bounds = bounds[bounds < n_keep]
+            if max_duration and n_keep < int(max_duration * float(raw.info["sfreq"])):
+                # sujet plus court que la cible : il n'est PAS comparable aux
+                # autres sur les features sensibles a la longueur
+                print(f"  {sid}: seulement {n_keep / raw.info['sfreq']:.0f}s "
+                      f"de signal propre (cible {max_duration:.0f}s)", flush=True)
+            rec = SubjectRecord(subject=sid, group=m["group"],
+                                data=data.astype(np.float32),
+                                sfreq=float(raw.info["sfreq"]),
+                                ch_names=list(raw.ch_names),
+                                boundaries=bounds.astype(int),
+                                extra=dict(age=m["age"], gender=m["gender"],
+                                           mmse=m["mmse"], dropped_epochs=dropped))
+            cache.save(key, rec)
+            if verbose:
+                print(f"  {sid} ({m['group']}): {rec.data.shape} @ {rec.sfreq} Hz "
+                      f"({dropped} epochs rejetees)", flush=True)
+            yield rec
+        except Exception as exc:
+            if verbose:
+                print(f"  {sid}: echec ({exc})", flush=True)
+            continue

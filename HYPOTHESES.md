@@ -1,5 +1,19 @@
 # Hypothèses en cours — pourquoi le bras convolutionnel sous-performe
 
+> **Lire d'abord.** Deux choses ont changé depuis la rédaction initiale, et
+> plusieurs sections ci-dessous n'en tiennent pas compte :
+>
+> 1. **La GEV ne peut pas servir à classer les méthodes** (piège P6). Les
+>    cartes vraies y sont battues par trois méthodes sur quatre. Le critère de
+>    comparaison est désormais le pouvoir discriminant (`msvae/classify.py`).
+>    Tous les tableaux de GEV antérieurs — H3, H8, l'observation à expliquer —
+>    départagent donc des méthodes sur une métrique cassée.
+> 2. **Le plancher de bruit entre graines vaut 0.03 à 0.065 de GEV** (P3).
+>    Presque tous les effets discutés ici lui sont inférieurs.
+>
+> Le résultat principal actuel est plus bas : le bras token devance toutes les
+> méthodes sur trois graines. Suite des vérifications dans `A_FAIRE.md`.
+
 Document de passation. Il récapitule l'observation à expliquer, toutes les
 hypothèses formulées, leur statut, les preuves accumulées et la façon de
 tester celles qui restent ouvertes.
@@ -96,6 +110,126 @@ reste à faire.
 (reconstruction et GEV aval) époque par époque pour les deux bras.
 **Correctif implémenté** : `--select-epoch-by-score`.
 
+#### Première mesure (60 époques, `--batch-size 1024`) — TROP COURTE, conclusion erronée
+
+> **Cette sous-section est conservée comme mise en garde, pas comme résultat.** Elle avait conduit à corriger l'attribution de H2 en affirmant que le bras dense souffrait le plus. La mesure à 600 époques plus bas montre l'inverse, et donne raison à la formulation d'origine. 60 époques à `--batch-size 1024` valent environ 15 époques du run de référence : c'était trop court pour voir l'effet.
+
+`results/diagnostics/` :
+
+| Bras | recon ép. 0 → 59 | GEV max (époque) | GEV ép. 59 | Perte |
+|---|---|---:|---:|---:|
+| `conv` | 0.341 → 0.061 | 0.6906 (ép. 15) | 0.6807 | −0.010 |
+| `dense` | 0.498 → 0.047 | 0.6911 (ép. 10) | 0.6341 | −0.057 |
+
+La divergence annoncée existe bien : la reconstruction baisse jusqu'à la
+dernière époque pendant que la GEV aval culmine tôt puis se dégrade. **Mais
+c'est le bras dense qui en souffre le plus**, à l'inverse de ce qui est écrit
+ci-dessus, et à leur optimum respectif les deux bras sont à égalité (0.6906 vs
+0.6911, soit le bruit). L'écart de 0.07 du run de référence est donc un
+artefact d'époque d'arrêt, pas un écart de représentation.
+
+*Réserve* : ce run utilisait `--batch-size 1024` contre 256 par défaut, soit 4×
+moins de pas de gradient par époque — 60 époques y valent environ 15 époques du
+run d'origine. Le renversement conv/dense peut n'être qu'un effet de
+trajectoire. À refaire à `--batch-size 256` pour comparer à budget de pas égal.
+
+*Correction au « fait 1 » de l'observation à expliquer* : « le bras conv
+reconstruit mieux que le dense, 0.033 contre 0.045 » n'est pas une comparaison
+valide, alors qu'elle sert à écarter un défaut de capacité. Les deux nombres ne
+mesurent pas la même chose — `models.polarity_invariant_recon` normalise le
+conv par les ~620 pixels du masque (des valeurs interpolées) et le dense par
+les 64 électrodes mesurées. C'est exactement l'objet de H4. Le run ci-dessus
+donne d'ailleurs l'ordre inverse (0.061 contre 0.047).
+
+#### Mesure à 600 époques, budget et objectif identiques — H2 CONFIRMÉE
+
+Trois architectures, 600 époques chacune, early stopping désactivé, et
+`loss_space=topo` — donc un objectif en espace capteur **identique pour les
+trois**. Une seule variable change : la durée d'entraînement.
+(`results/synth_t035_transition/`, `scripts/plot_downstream_curves.py`.)
+
+| Bras | reconstruction | GEV aval max → finale | Chute |
+|---|---:|---|---:|
+| `conv` | 0.0888 → 0.0261 | 0.683 → 0.612 | **−0.072** |
+| `token` | 0.7544 → 0.0396 | 0.667 → 0.622 | −0.044 |
+| `dense` | 0.0740 → 0.0318 | 0.698 → 0.693 | −0.006 |
+
+La courbe du conv descend continûment (0.692 0.682 0.677 0.680 0.657 0.639
+0.623 0.595 …) puis se stabilise vers 0.61, pendant que sa reconstruction
+s'améliore d'un facteur 3.4. **H2 est donc confirmée, et son attribution
+d'origine au bras conv était la bonne** : la chute mesurée, −0.072, correspond
+presque exactement aux −0.073 rapportés au départ.
+
+**Corollaire : H4 n'explique pas H2.** Ce run utilise `loss_space=topo`, donc
+un objectif strictement identique à celui du dense, et le conv se dégrade quand
+même. Ce n'est pas la loss en espace image qui est en cause — c'est l'encodeur
+convolutionnel lui-même qui perd sa géométrie latente en s'entraînant.
+
+L'ordre est instructif : conv (−0.072) → token (−0.044) → dense (−0.006). Le
+bras token n'a aucune convolution mais impose un biais de localité par les
+distances, et se situe entre les deux. La dégradation semble suivre le degré de
+contrainte spatiale imposée à l'encodeur — testable en balayant γ.
+
+*Réserve* : une seule graine. La chute du conv dépasse le plancher de bruit
+(P3), celle du dense non. Un second entraînement à graine identique donne
+−0.072 contre −0.078, l'écart venant du non-déterminisme CUDA : le bruit de
+mesure à graine fixée vaut ~0.006, bien en deçà des effets conv et token.
+
+---
+
+## Résultat principal : le bras token devance toutes les méthodes
+
+Cohorte t = 0.35 (effet de transition à durées appariées), 120 sujets, K = 4,
+600 époques pour les trois bras. **Trois graines, chacune changeant à la fois la
+cohorte et l'initialisation.** (`results/sweep_seeds_t035/`.)
+
+| Écart d'AUC (token − autre) | graine 0 | graine 1 | graine 2 | moyenne |
+|---|---:|---:|---:|---:|
+| vs `pycrostates` | +0.082 | +0.025 | +0.063 | **+0.057** |
+| vs `pca8_modkmeans` | +0.096 | +0.027 | +0.062 | **+0.062** |
+| vs `vae_conv` | +0.114 | +0.084 | +0.049 | +0.082 |
+| vs `vae_dense` | +0.112 | +0.071 | +0.051 | +0.078 |
+| vs `vade_dense` | +0.091 | +0.045 | +0.203 | +0.113 |
+| vs `spectral_global` | +0.362 | +0.343 | +0.379 | +0.361 |
+
+**Le signe est positif sur les trois graines, pour toutes les comparaisons.**
+C'est le premier bras d'apprentissage profond du projet à battre le pipeline
+classique et la compression linéaire, de façon reproductible, sur une métrique
+tenue hors de la boucle de sélection.
+
+Contre les **cartes vraies**, le signe change selon la graine (+0.093, −0.005,
++0.033) : le token les égale sans les dépasser. Le plafond reste un plafond.
+
+### Le fait le plus important de tout le projet
+
+| Graine | GEV du token | GEV de `pycrostates` |
+|---:|---:|---:|
+| 0 | 0.613 | 0.697 |
+| 1 | 0.630 | 0.690 |
+| 2 | 0.649 | 0.692 |
+
+**Le token a la GEV la plus basse ET le pouvoir discriminant le plus élevé, sur
+les trois graines.** Les deux métriques pointent en sens opposé de façon
+systématique. La GEV — la métrique historique du domaine — aurait classé cette
+méthode dernière alors qu'elle est la meilleure sur le seul critère qui compte
+cliniquement. C'est la justification la plus directe de tout le travail sur le
+banc de classification, et le piège P6 sous sa forme la plus frappante.
+
+### Ce qui n'est pas encore établi
+
+- **Deux graines manquent** sur les cinq prévues.
+- **Le taux d'apprentissage reste asymétrique** : le token tourne à 5e-4, les
+  autres à 2e-3. C'est le contournement d'un plateau qui lui est propre, mais
+  personne n'a vérifié que conv et dense ne feraient pas mieux au même taux.
+  C'est l'objection la plus prévisible ; le test est prêt dans
+  `results/synth_t035_lr5e4`.
+- **Rien sur données réelles** : le banc ds004504 valide date d'avant les
+  correctifs.
+- **La GEV par classe est dans les features** du classifieur, et c'est une
+  mesure de qualité d'ajustement. Contrôle `--no-gev` non encore exécuté.
+
+Voir `A_FAIRE.md` pour l'ordre des vérifications restantes.
+
 ---
 
 ## Hypothèses ouvertes, toutes implémentées et prêtes à tester
@@ -189,10 +323,26 @@ par vraisemblance** au lieu d'être fixé a priori. Non implémenté.
 - **P2 — Les sujets de validation servent deux fois** (sélection d'archi puis
   sélection d'époque). Pour un chiffre non biaisé sur données réelles, il faut
   un split à trois : entraînement / sélection / test.
-- **P3 — Une seule graine partout.** Aucun écart rapporté n'a d'intervalle de
-  confiance. L'effet de largeur (0.027) pourrait n'être que du bruit
-  d'initialisation. À corriger en priorité sur GPU, le coût devient
-  négligeable.
+- **P3 — Une seule graine partout. LE PLANCHER DE BRUIT EST MESURÉ, ET IL EST
+  PLUS GRAND QUE PRESQUE TOUS LES EFFETS DU DOCUMENT.** Quatre graines
+  d'entraînement, tout le reste tenu constant, sur le bras token :
+
+  | γ | GEV aval par graine | moyenne ± écart-type |
+  |---:|---|---|
+  | 0.05 | 0.663 · 0.589 · 0.609 · 0.654 | 0.629 ± 0.036 |
+  | 0.693 | 0.609 · 0.648 · 0.678 · 0.627 | 0.641 ± 0.030 |
+  | 3.00 | 0.649 · 0.511 · 0.636 · 0.563 | 0.590 ± 0.065 |
+
+  **La variabilité entre graines vaut 0.03 à 0.065 de GEV.** À comparer aux
+  effets que ce document cherche à expliquer : largeur du réseau 0.027 (H8),
+  β 0.01–0.02 (H3), dégradation du bras conv au fil de l'entraînement 0.010
+  (H2). Tous sont sous le plancher de bruit. Le seul écart qui le dépasse
+  franchement est celui du run de référence entre `vae_conv` et les autres
+  (0.07), et le diagnostic H2 a montré qu'il s'agissait d'un artefact d'époque
+  d'arrêt.
+
+  Conséquence pratique : **aucun écart de GEV inférieur à ~0.07 ne doit être
+  interprété sans plusieurs graines.** Le coût est négligeable sur GPU.
 - **P4 — Les runs courts mentent.** Le run de rodage (6 sujets, 4 époques)
   donnait l'ordre **inverse** : conv 0.96 vs dense 0.82 face au ground truth.
   Aucun run court ne doit servir à trancher cette question.
@@ -200,6 +350,43 @@ par vraisemblance** au lieu d'être fixé a priori. Non implémenté.
   clustering de Pycrostates, donc l'écart mélange « non-linéarité » et
   « changement d'algorithme de clustering ». Un bras k-means euclidien sur les
   scores PCA (après canonicalisation du signe) les séparerait.
+- **P6 — La GEV ne peut pas servir à classer les méthodes.** Les cartes vraies
+  y obtiennent 0.6745, *moins* que `pycrostates` (0.6882), `pca8` (0.6877) et
+  `vae_dense` (0.6779). La GEV récompense l'explication de variance, bruit de
+  fond 1/f compris : une méthode ajustée aux données en capte plus que la
+  vérité. Le sanity check canonique a le même défaut en pire, le ground truth
+  y étant *dernier* (0.746 contre 0.79–0.84). Ces deux métriques sont des
+  diagnostics, pas des critères de comparaison.
+- **P7 — Un effet de groupe porté par les durées ne démontre rien.** La durée
+  moyenne des segments est une propriété temporelle que la puissance relative
+  par bande lit directement : sur l'effet historique du générateur (85 ms
+  contre 65 ms), le bras spectral atteint AUC = 1.000 sans aucun microstate.
+  Seul un effet porté par la matrice de transition, **à durées appariées**,
+  permet de démontrer un apport propre des microstates.
+- **P8 — Les features sensibles à la longueur d'enregistrement fuient.** La
+  complexité de Lempel-Ziv et le taux d'entropie sont biaisés par la longueur
+  de la séquence. Le rejet d'epochs artefactées n'en retire pas la même
+  proportion chez tous, et rien ne garantit que patients et témoins soient
+  également artefactés — l'agitation est un symptôme. Sans troncature à durée
+  égale, un classifieur peut séparer les groupes en lisant la durée de signal
+  exploitable. Corrigé par `max_duration` dans `iter_ds004504`.
+- **P10 — Le « jeu de validation » du modèle final est inclus dans son jeu
+  d'entraînement.** `fit_models` entraîne le modèle final sur `full_bal`, qui
+  contient TOUS les sujets, tout en validant sur `val_bal`, tiré de
+  `val_bank` — donc sur des sujets déjà vus. Conséquences : le `best_val` de
+  `results.json` n'est pas une estimation hors-échantillon ; l'early stopping
+  ne peut pas détecter de sur-apprentissage puisqu'il regarde des données
+  vues ; et `--select-epoch-by-score`, présenté comme le correctif de H2,
+  évalue la GEV aval sur des sujets que le modèle a vus. La recherche
+  d'architecture, elle, est propre (`train_bal`, disjoint de `val_bal`).
+  Entraîner le modèle final sur tout est un choix défendable ; lire `best_val`
+  comme une mesure de généralisation ne l'est pas.
+
+- **P9 — L'erreur-type d'une AUC ne s'obtient pas par la formule analytique.**
+  Hanley–McNeil donne 0.053 à 120 sujets ; la valeur empirique, validation
+  croisée comprise, est **0.066** (mesure : 200 réplicats de bruit pur). La
+  formule sous-estime d'un quart. Utiliser la valeur empirique pour les barres
+  d'erreur et les seuils de détectabilité.
 
 ---
 
@@ -216,3 +403,190 @@ par vraisemblance** au lieu d'être fixé a priori. Non implémenté.
 
 **Ne pas faire (3) avant (2)** : on classerait des architectures optimisées
 pour le mauvais objectif.
+
+---
+
+## Ce qui a changé : un critère de comparaison, et deux nouveaux bras
+
+### Le problème que tout ce qui précède avait en commun
+
+Les hypothèses H2 à H9 sont formulées comme des explications d'un écart mesuré
+en GEV. Or aucune des métriques disponibles ne pouvait départager les méthodes
+(P6) : la GEV est saturée et classe la vérité en quatrième position, le sanity
+check canonique la classe dernière, la stabilité split-half mesure la
+reproductibilité et non la qualité — une méthode dégénérée qui renvoie toujours
+les mêmes cartes est parfaitement stable — et la corrélation aux cartes vraies
+n'existe pas sur données réelles.
+
+D'où le banc de classification (`msvae/classify.py`) : on note les méthodes sur
+leur capacité à séparer deux groupes de sujets. Le critère a de la marge
+(0.5 → 1.0), existe sur simulé comme sur réel, se tient **hors de la boucle de
+sélection** — ce qui règle P1 — et se compare entre des méthodes qui n'ont rien
+d'autre en commun.
+
+**Bras de référence obligatoire** : la puissance relative par bande. L'EEG
+Alzheimer est globalement ralenti et la durée des microstates est couplée au
+rythme dominant ; sans ce point zéro, une AUC n'est pas interprétable. Si les
+microstates ne battent pas la puissance par bande, la représentation n'apporte
+rien, et il vaut mieux le découvrir soi-même.
+
+### Le résultat qui justifie la démarche du projet
+
+Courbes de sensibilité, 120 sujets, effet de groupe d'amplitude croissante
+(`results/sensitivity_transition/`, `results/sensitivity_duration/`) :
+
+| Amplitude | transition : microstates | transition : spectral | durée : microstates | durée : spectral |
+|---:|---:|---:|---:|---:|
+| 0 | 0.399 | 0.475 | 0.399 | 0.475 |
+| 0.25 | 0.663 | 0.478 | 0.799 | 0.752 |
+| 0.50 | 0.831 | 0.473 | 0.983 | 0.928 |
+| 1.00 | **0.957** | **0.434** | 1.000 | 1.000 |
+
+À durées appariées, les microstates montent jusqu'à 0.957 pendant que le
+spectral reste au hasard sur toute la plage : **il existe un régime où les
+microstates capturent une information que la puissance par bande ne capture
+pas.** Le régime « durée » sert de contrôle et se comporte à l'opposé, les deux
+bras montant ensemble — ce qui établit que la séparation des deux composantes
+de l'effet est réelle et non un artefact.
+
+Ces chiffres sont ceux des cartes **vraies**, donc un plafond : ils disent que
+l'information est accessible en principe, pas qu'une méthode donnée la
+récupère. Comparer les méthodes se fait à t = 0.25–0.5, là où la courbe a de la
+pente.
+
+*Les AUC sous 0.5 à effet nul ont été investiguées et closes* : l'estimateur
+est non biaisé (0.5040 ± 0.0047 sur 200 réplicats de bruit pur), le protocole
+appliqué aux vraies features l'est aussi (étiquettes permutées : 0.4980 ±
+0.0083). Le 0.399 observé est au 5ᵉ percentile de sa propre distribution nulle,
+ce qui est banal une fois pris en compte qu'il s'agit du minimum de trois bras
+corrélés. Aucune correction nécessaire ; voir P9 pour le seul enseignement à
+retenir.
+
+### H11 — Encodeur à attention sur les électrodes (`TokenVAE`, implémenté)
+
+Réponse directe à H9, et supérieure à la démarche par élimination qu'il
+prévoyait. Chaque électrode est un token `(valeur, position 3D)`, l'attention
+est biaisée par la distance :
+
+    logit_ij = q_i · k_j / sqrt(d) − softplus(γ_h) · d_ij
+
+**La localité cesse d'être une hypothèse d'architecture câblée pour devenir un
+paramètre appris et lisible.** γ grand = traitement local ; γ → 0 = mélange
+global, la localité ne sert à rien. H9 passe donc d'une conclusion par défaut,
+toujours contestable, à une **mesure** avec une prédiction falsifiable : si
+l'argument des basses fréquences spatiales est correct, γ doit tendre vers 0.
+`TokenVAE.learned_locality()` est exporté dans `results.json`.
+
+Effets de bord : sans image, **H4, H7 et H1bis disparaissent par construction**
+plutôt que par correctif — ni interpolation, ni masque, ni bord à padding zéro,
+ni ridge à calibrer — et l'objectif est nativement en espace capteur, donc
+identique à celui du bras dense. Le décodeur est celui du bras dense, pour que
+l'ablation porte sur le seul encodeur. Le modèle est agnostique au montage.
+
+Vérifié : budget de paramètres apparié (conv 108 529 / dense 110 960 / token
+109 316), invariance par permutation des électrodes à 1.2e-7, invariance de
+polarité héritée sans modification.
+
+### H10 (VaDE) — implémenté, avec son mode de défaillance mesuré et corrigé
+
+`msvae/vade.py`. Le prior est posé sur un `BaseVAE` quelconque, donc il compose
+avec `TokenVAE` : encodeur à attention + prior en mélange est le modèle final
+cohérent, et rien n'oblige à choisir maintenant.
+
+L'effondrement de composantes, annoncé comme risque, s'est produit : sur
+données jouet à quatre prototypes connus, 2 composantes sur 4 utilisées
+(pureté 0.672) malgré l'initialisation par k-means. Corrigé par `batch_balance`
+— entropie de la responsabilité moyennée sur le lot :
+
+| `lambda_balance` | composantes | pureté | H(q̄) / max |
+|---:|---:|---:|---|
+| 0.0 | 2/4 | 0.672 | 0.568 / 1.386 |
+| 0.5 | 4/4 | 1.000 | 1.377 / 1.386 |
+| 2.0 | 4/4 | 1.000 | 1.377 / 1.386 |
+
+Quadrupler λ ne change rien : le terme empêche la mort d'une composante sans
+peser sur la vraisemblance.
+
+**Piège verrouillé** : `elbo()` appelle volontairement `vade_loss` avec
+`lambda_balance=0`. Le terme d'équilibrage n'appartient pas à l'ELBO et son
+maximum vaut log K ; l'inclure ferait croître le critère mécaniquement avec K
+et sélectionnerait toujours le plus grand nombre de composantes, par pur
+artefact et sans que rien ne le signale.
+
+### Ordre de test, révisé
+
+1. ~~`diagnose_overtraining.py`~~ — fait, voir H2.
+2. **Banc de classification sur les bras existants**, à t = 0.25–0.5 sur la
+   cohorte synthétique élargie, avec pycrostates. C'est là que les méthodes se
+   classent : ds004504 n'a pas la puissance pour ça (65 sujets non appariés,
+   écart d'AUC minimal détectable ~0.07–0.08).
+3. `--loss-space topo --select-epoch-by-score` — corrige H2 et H4 ensemble.
+4. `TokenVAE`, jugé sur le banc, et **lecture de γ**.
+5. VaDE, jugé sur le banc *et* sur la sélection de K (ELBO confronté à la
+   stabilité split-half, l'ELBO seul surestimant K).
+6. ds004504 comme validité externe, pas comme instrument de classement.
+
+**Ne pas faire `--grid extended`** avant que le banc n'ait tranché : classer 32
+configurations sur une métrique saturée ne produirait que du bruit bien rangé.
+
+---
+
+## H11, suite : ce que le bras token a réellement montré
+
+### Le mécanisme « localité apprise » ne fonctionne pas
+
+L'argument central de H11 était que γ, appris par descente de gradient,
+mesurerait la localité optimale. **C'est faux, et vérifié trois fois.** Avec un
+modèle qui apprend correctement (reconstruction 0.754 → 0.07), trois
+initialisations séparées d'un facteur 60 restent exactement où on les pose :
+
+| init de γ | γ final | reconstruction |
+|---:|---:|---:|
+| 0.05 | 0.056 | 0.0715 |
+| 0.693 | 0.707 | 0.0825 |
+| 3.00 | 2.982 | 0.0810 |
+
+La surface de loss est plate en γ. Lire γ après entraînement ne renseigne que
+sur son initialisation. (Vérifié séparément que γ agit bien sur la sortie —
+|μ| passe de 0.432 à 0.417 entre γ = 0.001 et γ = 10 — donc il ne s'agit pas
+d'un bug mais d'un gradient non informatif.)
+
+### Le balayage de γ ne montre pas d'effet non plus
+
+Traiter γ en hyperparamètre balayé était la parade. À une graine, la courbe
+semblait décroissante puis remontait au dernier point (0.663, 0.670, 0.609,
+0.576, 0.649) : non monotone, donc suspecte. À quatre graines, voir P3 — les
+moyennes se recouvrent, la variabilité entre graines est du même ordre que
+l'écart entre valeurs de γ.
+
+**Conclusion pour H9 : à ce protocole, la localité n'a pas d'effet mesurable
+sur la qualité aval.** Ce n'est ni une confirmation ni une réfutation de
+l'argument des basses fréquences spatiales — c'est un résultat nul, et il
+signifie que ce dispositif ne tranchera pas la question.
+
+### Le piège d'optimisation, à ne pas rouvrir
+
+Le bras token **plateaute pendant ~30 époques** au taux d'apprentissage des
+bras conv et dense (2e-3) avant de décrocher :
+
+    lr=2e-3 : 0.755 0.754 0.754 0.496 0.108 0.081 0.078 0.073  (par 10 époques)
+    lr=5e-4 : 0.754 0.153 0.123 0.103 0.096 0.088 0.085 0.083
+
+Avec `patience=10`, l'early stopping l'arrête en plein plateau. Tous les
+chiffres du bras token antérieurs au correctif mesurent donc un modèle qui n'a
+rien appris — GEV 0.584, AUC 0.603, deux cartes sur quatre, et une stabilité
+split-half de **1.000 ± 0.000** qui en est la signature : un modèle figé est
+parfaitement reproductible. Corrigé par `token_lr` et `token_patience` dans
+`ExperimentConfig`.
+
+*Leçon générale* : la stabilité split-half ne distingue pas un bon modèle d'un
+modèle mort. Elle doit toujours être lue à côté d'une mesure de qualité.
+
+### Ce qui reste de solide
+
+Le seul enseignement du balayage qui ne dépende pas de la monotonie : **la
+reconstruction est plate sur toute la plage de γ (0.0696–0.0825, sans ordre)
+pendant que la GEV aval varie de 0.094.** Une seule variable change, tout le
+reste est tenu constant. C'est la démonstration la plus propre du désalignement
+d'objectif de tout le projet — plus propre que les courbes de sur-entraînement,
+où la durée d'entraînement faisait bouger plusieurs choses à la fois.

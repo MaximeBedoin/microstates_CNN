@@ -6,6 +6,9 @@ construction** : chaque topographie est rendue sous forme d'image 2D, un VAE
 convolutionnel apprend un espace latent de faible dimension, et le clustering
 des microstates se fait dans cet espace latent.
 
+**Ce qu'il reste à faire, dans l'ordre, avec les commandes prêtes à lancer :
+[`A_FAIRE.md`](A_FAIRE.md).**
+
 Les choix de conception, les alternatives écartées et les points fragiles sont
 documentés dans [`CHOIX_METHODO.md`](CHOIX_METHODO.md). Les hypothèses en cours
 sur le résultat de l'ablation, leur statut et la façon de les tester sont dans
@@ -41,6 +44,17 @@ python scripts/run_synthetic.py --n-subjects 20 --duration 60 --epochs 60 --stab
 python scripts/download_eegbci.py --first 1 --last 60
 python scripts/run_eegbci.py --n-subjects 60 --epochs 40 --n-per-subject 1500
 
+# EEG clinique : ds004504 (Alzheimer / démence fronto-temporale / témoins)
+python scripts/download_ds004504.py
+python scripts/run_ds004504.py --groups AD CTR --epochs 30 --no-arch-search
+
+# pouvoir discriminant des méthodes d'un run (+ bras spectral de référence)
+python scripts/run_classification.py --run results/synthetic
+
+# courbes de sensibilité : quel est le plus petit effet détectable ?
+python scripts/sensitivity_curve.py --mode transition --n-subjects 120
+python scripts/sensitivity_curve.py --mode duration --n-subjects 120
+
 # tests
 python -m pytest tests -q
 ```
@@ -57,12 +71,14 @@ Chaque run écrit dans `--out` : `results.json` (toutes les métriques),
 | `msvae/synthetic.py` | cohorte simulée à dipôles connus (sphère 3 couches) |
 | `msvae/data.py` | téléchargement EEGBCI (miroir S3) et cache disque |
 | `msvae/features.py` | banque de pics, split par sujet, équilibrage |
-| `msvae/models.py` | VAE conv et VAE dense, losses invariantes en polarité |
+| `msvae/models.py` | VAE conv, dense et **token** (attention sur électrodes), losses invariantes en polarité |
 | `msvae/train.py` | boucle d'entraînement, recherche d'architecture |
 | `msvae/cluster.py` | k-means latent (2 temps / pondéré), décodage des centroïdes |
 | `msvae/microstates.py` | back-fitting et paramètres standards |
 | `msvae/baseline.py` | pipeline Pycrostates (modified k-means) |
 | `msvae/evaluate.py` | appariement hongrois, stabilité, comparaison de groupes |
+| `msvae/classify.py` | banc de classification : pouvoir discriminant, bras spectral de référence |
+| `msvae/vade.py` | prior en mélange de gaussiennes (VaDE), sélection de K |
 | `msvae/pipeline.py` | orchestration bout-en-bout |
 
 ## État d'avancement et reprise en local
@@ -70,6 +86,18 @@ Chaque run écrit dans `--out` : `results.json` (toutes les métriques),
 **Fait et versionné** : pipeline complet, 32 tests, un run synthétique de
 référence (`results/synthetic/`, avec `RESULTS.md`, les cartes et les modèles
 entraînés).
+
+**Le point le plus important à connaître avant de lire un résultat** : la GEV ne
+peut pas servir à classer les méthodes. Sur la cohorte synthétique, les cartes
+**vraies** y obtiennent 0.6745, *moins* que `pycrostates` (0.6882) et
+`pca8_modkmeans` (0.6877) — elle récompense l'explication de variance, bruit de
+fond compris. Le critère de comparaison est désormais le **pouvoir
+discriminant** (`msvae/classify.py`), avec la puissance relative par bande comme
+point zéro obligatoire. Mesure établissant que la démarche a un intérêt : sur un
+effet de groupe porté par les transitions à durées appariées, les microstates
+atteignent AUC 0.957 quand le bras spectral reste à 0.434 ; sur un effet porté
+par les durées, les deux montent ensemble. Détail dans
+[`HYPOTHESES.md`](HYPOTHESES.md).
 
 **Résultat principal et sa mise en garde** : voir
 [`CHOIX_METHODO.md` §9](CHOIX_METHODO.md). En bref, le bras convolutionnel

@@ -29,12 +29,35 @@ import numpy as np
 
 DEFAULT_MONTAGE = "biosemi64"
 
+# Les 19 electrodes cliniques de ds004504. `standard_1020` de MNE en contient
+# 94 — c'est le 10-20 ETENDU, pas le montage clinique. Simuler sur ces 19
+# positions reproduit les conditions du jeu reel : le rendu image y devient
+# interpole a plus de 90 %, et l'ablation conv/dense/token s'y mesure dans la
+# situation ou elle sera reellement utilisee.
+DS004504_CHANNELS = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", "O1",
+                     "O2", "F7", "F8", "T7", "T8", "P7", "P8", "Fz", "Cz", "Pz"]
+MONTAGE_PRESETS = {"ds004504_19": ("standard_1020", DS004504_CHANNELS)}
+
 
 # --------------------------------------------------------------------- modele
 def make_info(montage: str = DEFAULT_MONTAGE, sfreq: float = 250.0):
+    """Info MNE du montage simule.
+
+    `montage` accepte un nom de montage standard, ou une cle de
+    MONTAGE_PRESETS qui restreint un montage a une liste d'electrodes.
+    """
     import mne
 
+    picks = None
+    if montage in MONTAGE_PRESETS:
+        montage, picks = MONTAGE_PRESETS[montage]
     names = mne.channels.make_standard_montage(montage).ch_names
+    if picks is not None:
+        manquants = [c for c in picks if c not in names]
+        if manquants:
+            raise ValueError(f"electrodes absentes du montage {montage} : "
+                             f"{manquants}")
+        names = list(picks)
     info = mne.create_info(names, sfreq, "eeg")
     info.set_montage(montage)
     return info
@@ -218,12 +241,31 @@ def simulate_subject(info, lead, rr, subject: str, group: str = "G1",
 def simulate_dataset(n_subjects: int = 20, duration: float = 60.0,
                      n_states: int = 4, sfreq: float = 250.0,
                      montage: str = DEFAULT_MONTAGE, snr: float = 1.0,
-                     two_groups: bool = True, seed: int = 0):
-    """Cohorte synthetique.
+                     two_groups: bool = True, seed: int = 0,
+                     mean_dur_g1: float = 0.085, mean_dur_g2: float = 0.065,
+                     trans_boost: float = 2.5):
+    """Cohorte synthetique, avec un effet de groupe a DEUX composantes reglables.
 
-    Si `two_groups`, la moitie des sujets a une duree moyenne de segment plus
-    courte pour la classe 0 (effet "clinique" connu, sert a valider le volet
-    pouvoir discriminant).
+    La distinction est essentielle pour que le banc de classification puisse
+    departager quoi que ce soit :
+
+    * `mean_dur_g2` != `mean_dur_g1` -> effet de DUREE. C'est une propriete
+      temporelle du signal, que la puissance relative par bande lit
+      directement : le bras spectral le detecte donc trivialement (mesure :
+      AUC = 1.000 avec les valeurs par defaut, 85 ms contre 65 ms). Un effet
+      de duree ne peut PAS servir a demontrer l'apport des microstates.
+
+    * `trans_boost` != 1.0 -> effet de TRANSITION : la probabilite C -> D est
+      multipliee dans le groupe 2, a durees appariees. La composition
+      frequentielle est alors inchangee et le spectral n'a rien a lire ; seule
+      une methode qui recupere la SEQUENCE d'etats peut detecter l'effet.
+      C'est le seul regime ou la question "les microstates capturent-ils une
+      information que la puissance par bande ne capture pas ?" a un sens.
+
+    Les valeurs par defaut reproduisent exactement la cohorte de reference
+    (`results/synthetic/`). Pour une courbe de sensibilite specifique aux
+    microstates : mean_dur_g2 = mean_dur_g1 et trans_boost balaye de 1.0 (aucun
+    effet, toutes les methodes doivent tomber a 0.5) vers le haut.
     """
     rng = np.random.default_rng(seed)
     info = make_info(montage, sfreq)
@@ -233,11 +275,10 @@ def simulate_dataset(n_subjects: int = 20, duration: float = 60.0,
     subjects = []
     for i in range(n_subjects):
         group = "G2" if (two_groups and i % 2 == 1) else "G1"
-        mean_dur = 0.065 if group == "G2" else 0.085
+        mean_dur = mean_dur_g2 if group == "G2" else mean_dur_g1
         trans = default_transition_matrix(n_states, rng=rng)
-        if group == "G2":  # transition C->D renforcee dans le groupe 2
-            trans[min(2, n_states - 1)] *= 1.0
-            trans[min(2, n_states - 1), min(3, n_states - 1)] *= 2.5
+        if group == "G2" and trans_boost != 1.0:
+            trans[min(2, n_states - 1), min(3, n_states - 1)] *= trans_boost
             trans /= trans.sum(axis=1, keepdims=True)
         subjects.append(simulate_subject(
             info, lead, rr, subject=f"sub-{i:03d}", group=group,
