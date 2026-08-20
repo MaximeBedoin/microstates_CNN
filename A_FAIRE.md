@@ -195,3 +195,35 @@ inférieur à ~0.07 ne doit être interprété sur une seule graine.
 **Une stabilité split-half parfaite n'est pas un bon signe.** Un modèle qui n'a
 rien appris produit des cartes rigoureusement identiques d'une moitié de cohorte
 à l'autre. Toujours la lire à côté d'une mesure de qualité.
+
+---
+
+## Pistes non retenues pour ce projet
+
+Notées pour qu'elles ne se reperdent pas, sans rang ni priorité.
+
+### La discrétisation en K états fait-elle perdre de l'information ?
+
+Le pipeline clusterise dans le latent, décode les centroïdes en cartes, puis
+n'utilise plus que ces cartes. Le latent est abandonné en route.
+
+Or les paramètres de microstates **sont déjà une agrégation du latent** : la
+couverture est l'histogramme des affectations, la durée et l'occurrence
+ajoutent l'ordre temporel que l'histogramme perd. Ce n'est donc pas une
+agrégation arbitraire, c'est celle qui garde la séquence.
+
+La seule chose qu'elle jette, c'est la **forme de la distribution** latente. Ce
+qui donne une question précise : cette forme porte-t-elle de l'information de
+groupe que les états discrets ne portent pas ?
+
+**La version la moins chère ne demande pas de nouveau bras** : concaténer les
+31 features de microstates avec 16 valeurs de latent agrégé (moyenne et
+variance par dimension, pour un latent de 8) et regarder si l'AUC bouge. Si
+elle ne bouge pas, la discrétisation ne perd rien.
+
+Cette formulation évite aussi le problème de comparabilité : on ne prétend pas
+comparer un bras latent à `pycrostates`, qui n'a aucun latent — on mesure juste
+si un ajout améliore un bras existant.
+
+*Coût : encoder avec les modèles déjà entraînés, agréger, relancer un banc.
+Environ une heure de code, quarante minutes de calcul.*
