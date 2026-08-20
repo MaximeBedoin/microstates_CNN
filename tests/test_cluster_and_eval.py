@@ -66,3 +66,23 @@ def test_canonical_templates_are_distinct():
     c = abs_corr_matrix(maps, maps)
     np.fill_diagonal(c, 0)
     assert c.max() < 0.85
+
+
+def test_select_subjects_est_stratifie():
+    """ds004504 est ordonné par groupe : tronquer la liste globale rendait une
+    cohorte mono-classe, et l'échec n'apparaissait qu'après l'entraînement."""
+    from msvae.data import select_subjects
+
+    meta = {f"sub-{i:03d}": {"group": "AD"} for i in range(1, 37)}
+    meta |= {f"sub-{i:03d}": {"group": "FTD"} for i in range(37, 60)}
+    meta |= {f"sub-{i:03d}": {"group": "CTR"} for i in range(60, 89)}
+
+    sel = select_subjects(meta, ("AD", "CTR"), max_subjects=20)
+    groupes = [meta[s]["group"] for s in sel]
+    assert groupes.count("AD") == 10 and groupes.count("CTR") == 10
+
+    # sans troncature, tous les sujets des groupes demandés
+    assert len(select_subjects(meta, ("AD", "CTR"))) == 65
+    # les groupes non demandés ne sont jamais inclus
+    assert all(meta[s]["group"] != "FTD"
+               for s in select_subjects(meta, ("AD", "CTR"), 40))

@@ -231,6 +231,25 @@ def read_participants(root: Path | str) -> dict:
     return out
 
 
+def select_subjects(meta: dict, groups, max_subjects=None) -> list:
+    """Sujets a charger, tronques DE FACON STRATIFIEE.
+
+    ds004504 est ordonne par groupe (sub-001..036 = AD, 037..059 = FTD,
+    060..088 = temoins). Tronquer la liste globale donnait donc une cohorte
+    mono-classe : `--n-subjects 20` sur (AD, CTR) rendait 20 patients et zero
+    temoin, et l'echec ne survenait qu'apres l'entrainement, dans la
+    comparaison de groupes. On prend autant de sujets de chaque groupe.
+    """
+    keep = [s for s, m in sorted(meta.items()) if m["group"] in groups]
+    if not max_subjects:
+        return keep
+    par_groupe = max(1, max_subjects // max(len(groups), 1))
+    sel = []
+    for g in groups:
+        sel += [s for s in keep if meta[s]["group"] == g][:par_groupe]
+    return sorted(sel)
+
+
 def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
                   cache: SubjectCache | None = None, l_freq: float = 1.0,
                   h_freq: float = 40.0, epoch_length: float | None = 2.0,
@@ -282,9 +301,11 @@ def iter_ds004504(root: Path | str = "cache/ds004504", groups=("AD", "CTR"),
     # melanger polluait l'arborescence BIDS et cassait sa validation.
     cache = cache or SubjectCache(tag="ds004504_prep")
     meta = read_participants(root)
-    keep = [s for s, m in sorted(meta.items()) if m["group"] in groups]
-    if max_subjects:
-        keep = keep[:max_subjects]
+    keep = select_subjects(meta, groups, max_subjects)
+    if verbose and max_subjects:
+        from collections import Counter
+        print(f"  troncature stratifiee : "
+              f"{dict(Counter(meta[s]['group'] for s in keep))}", flush=True)
 
     for sid in keep:
         m = meta[sid]

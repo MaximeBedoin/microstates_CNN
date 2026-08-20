@@ -291,12 +291,21 @@ def fit_vade(base_model, x_train, x_val=None, n_components: int = 4,
     for ep in range(epochs):
         model.train()
         perm = torch.randperm(len(xt))
+        # moyenne PONDEREE sur l'epoque : rapporter le dernier minibatch
+        # donnerait une mesure sur ~1024 echantillons au lieu des ~250 000,
+        # or `balance` sert d'indicateur d'effondrement de composantes et deux
+        # executions identiques afficheraient alors des valeurs differentes.
+        acc, n_seen = {}, 0
         for i in range(0, len(xt), batch_size):
             xb = xt[perm[i:i + batch_size]].to(dev)
             opt.zero_grad()
             loss, diag = vade_loss(model, xb, m, lambda_balance=lambda_balance)
             loss.backward()
             opt.step()
+            for k_, v in diag.items():
+                acc[k_] = acc.get(k_, 0.0) + v * len(xb)
+            n_seen += len(xb)
+        diag = {k_: v / max(n_seen, 1) for k_, v in acc.items()}
         row = dict(epoch=ep, **{f"train_{k}": v for k, v in diag.items()})
         if x_val is not None:
             row["val_elbo"] = elbo(model, x_val, m)

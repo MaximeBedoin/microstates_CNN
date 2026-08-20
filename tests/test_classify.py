@@ -106,3 +106,25 @@ def test_spectral_features_global_et_channel():
     assert 9.0 <= Xg[0, -1] <= 11.0
     # puissance relative : somme des bandes proche de 1
     assert Xg[0, :len(classify.DEFAULT_BANDS)].sum() == pytest.approx(1.0, abs=0.05)
+
+
+def test_permute_labels_respecte_l_appariement():
+    """Sur un protocole apparié (un sujet = deux lignes), permuter ligne par
+    ligne pourrait donner deux fois la même condition au même sujet, ce qui
+    détruit l'appariement que le découpage en plis respecte par ailleurs."""
+    rng = np.random.default_rng(0)
+    subs = np.repeat([f"s{i}" for i in range(6)], 2)
+    y = np.tile([0, 1], 6)
+    for _ in range(20):
+        out = classify._permute_labels(y, subs, rng)
+        for s in np.unique(subs):
+            assert sorted(out[subs == s]) == [0, 1]
+
+
+def test_permute_labels_global_si_un_sujet_une_ligne():
+    rng = np.random.default_rng(1)
+    subs = np.array([f"t{i}" for i in range(12)])
+    y = np.repeat([0, 1], 6)
+    out = classify._permute_labels(y, subs, rng)
+    assert sorted(out) == sorted(y)
+    assert out.shape == y.shape

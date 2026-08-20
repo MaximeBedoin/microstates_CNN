@@ -265,6 +265,27 @@ def compare_arms(results: dict, y, n_boot: int = 2000, seed: int = 0) -> dict:
     return out
 
 
+def _permute_labels(y, subjects, rng):
+    """Permutation respectant la structure du protocole.
+
+    Un sujet apparaissant plusieurs fois (protocole APPARIE, type yeux ouverts
+    / yeux fermes), permuter ligne par ligne pourrait lui attribuer deux fois
+    la meme condition, ce qui detruit l'appariement que `_cv_splits` respecte
+    par ailleurs : la distribution nulle obtenue ne serait pas celle du
+    protocole reel. On permute alors A L'INTERIEUR de chaque sujet. Quand
+    chaque sujet n'a qu'une ligne, on retombe sur une permutation globale.
+    """
+    subjects = np.asarray(subjects)
+    y = np.asarray(y, dtype=int)
+    if len(np.unique(subjects)) == len(subjects):
+        return rng.permutation(y)
+    out = y.copy()
+    for s in np.unique(subjects):
+        idx = np.flatnonzero(subjects == s)
+        out[idx] = rng.permutation(y[idx])
+    return out
+
+
 def permutation_control(X, y, subjects, n_perm: int = 20, seed: int = 0,
                         **kw) -> dict:
     """Controle de calibration : sous permutation des etiquettes, l'AUC doit
@@ -273,8 +294,8 @@ def permutation_control(X, y, subjects, n_perm: int = 20, seed: int = 0,
     """
     rng = np.random.default_rng(seed)
     y = np.asarray(y, dtype=int)
-    aucs = [evaluate_arm(X, rng.permutation(y), subjects, **kw)["auc"]
-            for _ in range(n_perm)]
+    aucs = [evaluate_arm(X, _permute_labels(y, subjects, rng), subjects,
+                         **kw)["auc"] for _ in range(n_perm)]
     return dict(mean=float(np.mean(aucs)),
                 sd=float(np.std(aucs, ddof=1)) if n_perm > 1 else 0.0,
                 aucs=[float(a) for a in aucs])

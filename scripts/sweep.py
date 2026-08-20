@@ -67,7 +67,8 @@ def run_cell(a) -> dict:
 
     cfg = ExperimentConfig(dataset=a.dataset, n_subjects=a.n_subjects,
                            duration=a.duration, k=a.k, latent_dim=a.latent_dim,
-                           seed=a.seed, n_per_subject=a.n_per_subject, **eff)
+                           seed=a.seed, n_per_subject=a.n_per_subject,
+                           montage=a.montage, **eff)
     records, gt = load_records(cfg)
     bank, info = build_bank(records, cfg.image_size)
     _, val_bank = bank.split_subjects(cfg.val_frac, seed=a.seed)
@@ -207,6 +208,7 @@ def drive(a):
             "--n-repeats", str(a.n_repeats), "--effect", a.effect,
             "--effect-t", str(a.effect_t), "--out", str(out),
             "--vade-lambda-balance", str(a.vade_lambda_balance),
+            "--montage", a.montage,
             "--arms", *a.arms]
     if a.n_per_subject:
         base += ["--n-per-subject", str(a.n_per_subject)]
@@ -283,6 +285,36 @@ def aggregate(out: Path, a):
                 incomplets.append(f"`{n}` a K={k} : {len(v)}/{n_att} graines")
             row.append(cell)
         lines.append(f"| `{n}` | " + " | ".join(row) + " |")
+
+    # La GEV etait calculee par chaque cellule mais jamais agregee : la
+    # section restait vide dans summary.json et n'apparaissait nulle part dans
+    # SWEEP.md. Or la divergence GEV/AUC est le resultat central du projet — le
+    # bras token a la GEV la PLUS BASSE et l'AUC la plus haute — et il fallait
+    # rouvrir les JSON de cellules a la main pour la voir.
+    gev_names = sorted({n for c in cells for n in c.get("gev", {})})
+    if gev_names:
+        lines += ["", "## GEV (moyenne ± écart-type entre graines)", "",
+                  "| Méthode | " + " | ".join(f"K={k}" for k in ks) + " |",
+                  "|---|" + "---:|" * len(ks)]
+        for n in gev_names:
+            row = []
+            for k in ks:
+                v = np.array([c["gev"][n] for c in cells
+                              if c["k"] == k and n in c.get("gev", {})])
+                if not len(v):
+                    row.append("—")
+                    continue
+                summary["gev"].setdefault(n, {})[k] = dict(
+                    mean=float(v.mean()),
+                    sd=float(v.std(ddof=1)) if len(v) > 1 else 0.0,
+                    n=int(len(v)))
+                row.append(f"{v.mean():.3f} ± {v.std(ddof=1):.3f}" if len(v) > 1
+                           else f"{v.mean():.3f}")
+            lines.append(f"| `{n}` | " + " | ".join(row) + " |")
+        lines += ["", "*À lire À CÔTÉ du tableau d'AUC, jamais seul : la GEV "
+                  "classe les cartes vraies quatrième sur la cohorte de "
+                  "référence (piège P6).*"]
+
     if incomplets:
         lines += ["", "> **Moyennes incompletes** — ces bras ont echoue sur une "
                   "partie des cellules, leur moyenne porte donc sur moins de "
@@ -320,6 +352,12 @@ def main():
     p.add_argument("--dataset", default="synthetic",
                    choices=["synthetic", "ds004504", "eegbci"])
     p.add_argument("--n-subjects", type=int, default=120)
+    p.add_argument("--montage", default="biosemi64",
+                   help="montage simule. `ds004504_19` restreint le 10-20 aux "
+                        "19 electrodes cliniques du jeu reel : sans cette "
+                        "option le balayage retombait silencieusement sur du "
+                        "64 canaux, et un resultat annonce comme du 19 canaux "
+                        "n'en etait pas")
     p.add_argument("--duration", type=float, default=60.0)
     p.add_argument("--latent-dim", type=int, default=8)
     p.add_argument("--epochs", type=int, default=40)
