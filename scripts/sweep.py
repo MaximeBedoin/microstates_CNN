@@ -219,12 +219,20 @@ def drive(a):
     def work(cell):
         s, k = cell
         cmd = base + ["--seed", str(s), "--k", str(k)]
+        t_cell = time.time()
         p = subprocess.run(cmd, capture_output=True, text=True)
         lock["n"] += 1
         ok = p.returncode == 0 and cell_path(out, s, k).exists()
         tag = "ok " if ok else "ECHEC"
-        print(f"  [{lock['n']}/{len(todo)}] {tag} graine {s} K={k} "
-              f"({time.time() - t0:.0f}s)", flush=True)
+        # duree de LA CELLULE, et non temps ecoule depuis le demarrage du
+        # pilote : les cellules paralleles se terminant presque ensemble,
+        # afficher le cumul donnait l'illusion que chacune avait pris tout ce
+        # temps. On affiche aussi le debit, seul chiffre utile pour planifier.
+        dt = time.time() - t_cell
+        deb = (time.time() - t0) / max(lock["n"], 1)
+        print(f"  [{lock['n']}/{len(todo)}] {tag} graine {s} K={k} — "
+              f"cellule {dt / 3600:.1f} h, debit {deb / 3600:.1f} h/cellule",
+              flush=True)
         if not ok:
             print((p.stderr or "")[-800:], flush=True)
 
